@@ -7,23 +7,21 @@
   <style>
     body { 
       font-family: 'Segoe UI', sans-serif; 
-      padding: 20px; 
-      max-width: 900px; 
-      margin: auto;
+      padding: 20px; max-width: 900px; margin:auto;
       background: linear-gradient(135deg, #0f2027, #203a43, #2c5364); 
-      color: #fff; 
+      color:#fff; 
     }
-    h1 { text-align: center; font-size: 2.2em; text-shadow: 0 0 8px rgba(0,255,255,0.8); }
+    h1 { text-align:center; font-size:2.2em; text-shadow:0 0 8px rgba(0,255,255,0.8); }
     label { display:block; margin-top:16px; font-weight:600; }
     input, select, button {
-      font-size: 16px; padding: 10px; margin-top: 6px; width: 100%; border-radius: 8px;
-      border: none; box-sizing: border-box;
+      font-size:16px; padding:10px; margin-top:6px; width:100%; border-radius:8px;
+      border:none; box-sizing:border-box;
     }
-    input, select { background: rgba(255,255,255,0.1); color: #fff; }
-    button { background: #00c6ff; color: #fff; cursor: pointer; }
-    button:hover { background: #0072ff; box-shadow: 0 0 12px #00c6ff; }
-    pre { background: rgba(0,0,0,0.6); padding: 12px; border-radius: 10px; min-height: 80px; overflow:auto; }
-    .section { margin-top: 30px; padding: 20px; border-radius: 12px; background: rgba(0,0,0,0.4); }
+    input, select { background: rgba(255,255,255,0.1); color:#fff; }
+    button { background:#00c6ff; color:#fff; cursor:pointer; }
+    button:hover { background:#0072ff; box-shadow:0 0 12px #00c6ff; }
+    pre { background: rgba(0,0,0,0.6); padding:12px; border-radius:10px; min-height:80px; overflow:auto; }
+    .section { margin-top:30px; padding:20px; border-radius:12px; background:rgba(0,0,0,0.4); }
   </style>
 </head>
 <body>
@@ -75,43 +73,39 @@ document.getElementById('gen').addEventListener('click', async () => {
   try {
     const resp = await fetch(`/api/random?bits=${bits}&format=${format}&ibm=${ibm}`);
     const j = await resp.json();
-    result.textContent = JSON.stringify(j, null, 2);
-  } catch (e) {
-    result.textContent = '⚠️ Request failed: ' + e;
+    result.textContent = JSON.stringify(j,null,2);
+  } catch(e) {
+    result.textContent = "⚠️ Request failed: " + e;
   }
 });
 
+// Download key
 document.getElementById('download').addEventListener('click', () => {
   const txt = result.textContent;
-  if (!txt || txt.includes("No data")) { alert("Generate a key first."); return; }
-  const b = new Blob([txt], {type:'application/json'});
+  if(!txt || txt.includes("No data")) { alert("Generate a key first."); return; }
+  const b = new Blob([txt],{type:'application/json'});
   const url = URL.createObjectURL(b);
   const a = document.createElement('a');
-  a.href = url;
-  a.download = 'quantum_key.json';
+  a.href=url;
+  a.download='quantum_key.json';
   a.click();
   URL.revokeObjectURL(url);
 });
 
 // Fetch ESP8266 data
 async function fetchESPData() {
-  espDiv.textContent = "Loading...";
+  espDiv.textContent="Loading...";
   try {
     const resp = await fetch("/api/esp8266");
     const j = await resp.json();
-    espDiv.textContent = JSON.stringify(j, null, 2);
-  } catch (e) {
-    espDiv.textContent = "⚠️ Failed: " + e;
+    espDiv.textContent = JSON.stringify(j,null,2);
+  } catch(e){
+    espDiv.textContent = "⚠️ Failed: "+e;
   }
 }
 
-// Manual refresh
 document.getElementById('refreshESP').addEventListener('click', fetchESPData);
-
-// Auto-refresh every 5 seconds
-setInterval(fetchESPData, 5000);
-
-// Initial load
+setInterval(fetchESPData,5000);
 fetchESPData();
 </script>
 </body>

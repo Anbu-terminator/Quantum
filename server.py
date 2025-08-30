@@ -19,6 +19,7 @@ IBM_API_TOKEN = "XoyDUMzA1m8ECqxN17kPLA0tNqnFJe-O69ZMj5vR1j-n"
 # Store latest ESP8266 data
 ESP8266_DATA = {"status": "No data received yet."}
 
+# --- Quantum random generator ---
 def qiskit_quantum_bits(num_bits=128, use_ibm=False):
     if num_bits <= 0: return b""
     max_qubits = 25
@@ -54,6 +55,7 @@ def api_random():
     payload = base64.b64encode(raw).decode() if fmt=="b64" else binascii.hexlify(raw).decode()
     return jsonify({"bits_requested":bits,"format":fmt,"payload":payload})
 
+# --- Cipher POST (AES) ---
 @app.route("/api/cipher", methods=["POST"])
 def api_cipher():
     if not request.is_json: return jsonify({"error":"expected JSON"}),400
@@ -64,7 +66,7 @@ def api_cipher():
     except Exception as e: return jsonify({"error":"invalid hex","detail":str(e)}),400
     return jsonify({"status":"ok","received_bytes":len(ct),"message":"Ciphertext received"}),200
 
-# ESP8266 endpoints
+# --- ESP8266 data endpoints ---
 @app.route("/api/esp8266", methods=["POST"])
 def api_esp8266_post():
     global ESP8266_DATA
@@ -76,6 +78,7 @@ def api_esp8266_post():
 def api_esp8266_get():
     return jsonify(ESP8266_DATA)
 
+# --- Serve frontend ---
 @app.route("/")
 def index():
     return send_from_directory("static","index.html")
