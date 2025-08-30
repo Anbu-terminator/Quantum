@@ -5,8 +5,14 @@
   <title>Quantum Randomness & ESP8266 Monitor</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { font-family: 'Segoe UI', sans-serif; padding: 20px; max-width: 900px; margin: auto;
-      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364); color: #fff; }
+    body { 
+      font-family: 'Segoe UI', sans-serif; 
+      padding: 20px; 
+      max-width: 900px; 
+      margin: auto;
+      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364); 
+      color: #fff; 
+    }
     h1 { text-align: center; font-size: 2.2em; text-shadow: 0 0 8px rgba(0,255,255,0.8); }
     label { display:block; margin-top:16px; font-weight:600; }
     input, select, button {
@@ -58,6 +64,9 @@
 
 <script>
 const result = document.getElementById('result');
+const espDiv = document.getElementById('esp8266');
+
+// Quantum random generation
 document.getElementById('gen').addEventListener('click', async () => {
   const bits = parseInt(document.getElementById('bits').value||'128');
   const format = document.getElementById('format').value;
@@ -84,9 +93,8 @@ document.getElementById('download').addEventListener('click', () => {
   URL.revokeObjectURL(url);
 });
 
-// ESP8266 refresh
-const espDiv = document.getElementById('esp8266');
-document.getElementById('refreshESP').addEventListener('click', async () => {
+// Fetch ESP8266 data
+async function fetchESPData() {
   espDiv.textContent = "Loading...";
   try {
     const resp = await fetch("/api/esp8266");
@@ -95,7 +103,16 @@ document.getElementById('refreshESP').addEventListener('click', async () => {
   } catch (e) {
     espDiv.textContent = "⚠️ Failed: " + e;
   }
-});
+}
+
+// Manual refresh
+document.getElementById('refreshESP').addEventListener('click', fetchESPData);
+
+// Auto-refresh every 5 seconds
+setInterval(fetchESPData, 5000);
+
+// Initial load
+fetchESPData();
 </script>
 </body>
 </html>
