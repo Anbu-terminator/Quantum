@@ -1,0 +1,5 @@
+flask
+flask-cors
+qiskit
+qiskit-aer
+qiskit-ibm-runtime

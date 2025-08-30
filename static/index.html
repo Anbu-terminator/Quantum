@@ -1,0 +1,78 @@
+<!-- static/index.html -->
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Quantum Randomness Server</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; max-width: 900px; margin:auto; }
+    label { display:block; margin-top:12px; }
+    input, select, button, textarea { font-size:16px; padding:8px; margin-top:6px; width:100%; box-sizing:border-box; }
+    .row { display:flex; gap:10px; }
+    .col { flex:1; }
+    pre { background:#f4f4f4; padding:10px; overflow:auto; }
+  </style>
+</head>
+<body>
+  <h1>Quantum Randomness Server</h1>
+  <p>Generate quantum random bits (from local simulator or IBM Quantum if configured).</p>
+
+  <label>Bits to generate
+    <input id="bits" type="number" value="128" min="1" max="8192" />
+  </label>
+
+  <label>Format
+    <select id="format">
+      <option value="hex">Hex</option>
+      <option value="b64">Base64</option>
+    </select>
+  </label>
+
+  <label>
+    Use IBM backend? (must have token in server config)
+    <select id="ibm">
+      <option value="0">No (use local simulator)</option>
+      <option value="1">Yes (IBM)</option>
+    </select>
+  </label>
+
+  <div style="margin-top:12px;">
+    <button id="gen">Generate</button>
+    <button id="download">Download Key</button>
+  </div>
+
+  <h3>Result</h3>
+  <pre id="result">No data yet.</pre>
+
+<script>
+const result = document.getElementById('result');
+document.getElementById('gen').addEventListener('click', async () => {
+  const bits = parseInt(document.getElementById('bits').value||'128');
+  const format = document.getElementById('format').value;
+  const ibm = document.getElementById('ibm').value;
+  result.textContent = 'Generating...';
+  try {
+    const resp = await fetch(`/api/random?bits=${bits}&format=${format}&ibm=${ibm}`);
+    const j = await resp.json();
+    if (j.error) result.textContent = 'Error: ' + j.error;
+    else result.textContent = JSON.stringify(j, null, 2);
+  } catch (e) {
+    result.textContent = 'Request failed: ' + e;
+  }
+});
+
+document.getElementById('download').addEventListener('click', () => {
+  const txt = result.textContent;
+  if (!txt || txt.includes("No data")) { alert("Generate a key first."); return; }
+  const b = new Blob([txt], {type:'application/json'});
+  const url = URL.createObjectURL(b);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'quantum_key.json';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
