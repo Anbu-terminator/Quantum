@@ -8,7 +8,6 @@ import os
 # Qiskit imports
 from qiskit import QuantumCircuit
 from qiskit_aer import AerSimulator
-# optional IBM provider
 try:
     from qiskit_ibm_runtime import QiskitRuntimeService, Sampler
     IBM_AVAILABLE = True
@@ -18,12 +17,11 @@ except Exception:
 app = Flask(__name__, static_folder="static", static_url_path="/")
 CORS(app)
 
-# -----------------------------
-# CONFIGURATION - CHANGE THESE
-# -----------------------------
 IBM_API_TOKEN = "XoyDUMzA1m8ECqxN17kPLA0tNqnFJe-O69ZMj5vR1j-n"   # optional
 IBM_REGION = "ibm-q"
-# -----------------------------
+
+# Store ESP8266 last data
+ESP8266_DATA = {"status": "No data received yet."}
 
 def qiskit_quantum_bits(num_bits=128, use_ibm=False):
     if num_bits <= 0:
@@ -76,10 +74,6 @@ def api_random():
 
 @app.route("/api/cipher", methods=["POST"])
 def api_cipher():
-    """
-    Accepts JSON: { "ciphertext": "<HEXSTRING>" }
-    Returns: { "status": "ok", "received_bytes": N } or error JSON.
-    """
     if not request.is_json:
         return jsonify({"error": "expected application/json"}), 400
     data = request.get_json()
@@ -90,14 +84,27 @@ def api_cipher():
         ct = binascii.unhexlify(hexct)
     except Exception as e:
         return jsonify({"error": "invalid hex ciphertext", "detail": str(e)}), 400
-
-    # For now we just acknowledge receipt. If you want the server to decrypt,
-    # you'd need to share the key/IV (insecure) or use an agreed protocol.
     return jsonify({
         "status": "ok",
         "received_bytes": len(ct),
         "message": "Ciphertext received"
     }), 200
+
+# ESP8266 data endpoints
+@app.route("/api/esp8266", methods=["POST"])
+def api_esp8266_post():
+    """
+    ESP8266 will POST JSON like: { "temperature": 25.5, "humidity": 60 }
+    """
+    global ESP8266_DATA
+    if not request.is_json:
+        return jsonify({"error": "expected JSON"}), 400
+    ESP8266_DATA = request.get_json()
+    return jsonify({"status": "ok", "stored": ESP8266_DATA})
+
+@app.route("/api/esp8266", methods=["GET"])
+def api_esp8266_get():
+    return jsonify(ESP8266_DATA)
 
 @app.route("/")
 def index():
@@ -107,6 +114,4 @@ if __name__ == "__main__":
     HOST = "0.0.0.0"
     PORT = 5000
     print("IBM available:", IBM_AVAILABLE)
-    if IBM_API_TOKEN:
-        print("IBM token set (not printed). IBM usage enabled.")
     app.run(host=HOST, port=PORT, debug=True)
