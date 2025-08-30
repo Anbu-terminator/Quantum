@@ -1,4 +1,3 @@
-<!-- static/index.html -->
 <!doctype html>
 <html>
 <head>
@@ -6,17 +5,69 @@
   <title>Quantum Randomness Server</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    body { font-family: Arial, sans-serif; padding: 20px; max-width: 900px; margin:auto; }
-    label { display:block; margin-top:12px; }
-    input, select, button, textarea { font-size:16px; padding:8px; margin-top:6px; width:100%; box-sizing:border-box; }
-    .row { display:flex; gap:10px; }
-    .col { flex:1; }
-    pre { background:#f4f4f4; padding:10px; overflow:auto; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      padding: 20px;
+      max-width: 900px;
+      margin: auto;
+      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+      color: #fff;
+      animation: fadeIn 1.2s ease-in;
+    }
+    h1 {
+      text-align: center;
+      font-size: 2.2em;
+      text-shadow: 0 0 8px rgba(0,255,255,0.8);
+    }
+    label { display:block; margin-top:16px; font-weight:600; }
+    input, select, button {
+      font-size: 16px;
+      padding: 10px;
+      margin-top: 6px;
+      width: 100%;
+      border-radius: 8px;
+      border: none;
+      box-sizing: border-box;
+    }
+    input, select {
+      background: rgba(255,255,255,0.1);
+      color: #fff;
+    }
+    button {
+      background: #00c6ff;
+      color: #fff;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+    button:hover {
+      background: #0072ff;
+      box-shadow: 0 0 12px #00c6ff;
+    }
+    pre {
+      background: rgba(0,0,0,0.6);
+      padding: 12px;
+      border-radius: 10px;
+      min-height: 80px;
+      overflow:auto;
+      animation: fadeInUp 0.8s ease;
+    }
+    @keyframes fadeIn { from {opacity:0;} to {opacity:1;} }
+    @keyframes fadeInUp { from {transform:translateY(20px); opacity:0;} to {transform:translateY(0); opacity:1;} }
+    .loading {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 3px solid rgba(255,255,255,0.3);
+      border-radius: 50%;
+      border-top-color: #00c6ff;
+      animation: spin 1s ease infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
-  <h1>Quantum Randomness Server</h1>
-  <p>Generate quantum random bits (from local simulator or IBM Quantum if configured).</p>
+  <h1>⚛️ Quantum Randomness Server</h1>
+  <p style="text-align:center">Generate quantum random bits from simulator or IBM Quantum.</p>
 
   <label>Bits to generate
     <input id="bits" type="number" value="128" min="1" max="8192" />
@@ -29,17 +80,16 @@
     </select>
   </label>
 
-  <label>
-    Use IBM backend? (must have token in server config)
+  <label>Use IBM backend?
     <select id="ibm">
-      <option value="0">No (use local simulator)</option>
+      <option value="0">No (local simulator)</option>
       <option value="1">Yes (IBM)</option>
     </select>
   </label>
 
-  <div style="margin-top:12px;">
-    <button id="gen">Generate</button>
-    <button id="download">Download Key</button>
+  <div style="margin-top:20px; display:flex; gap:10px;">
+    <button id="gen">⚡ Generate</button>
+    <button id="download">⬇ Download Key</button>
   </div>
 
   <h3>Result</h3>
@@ -51,14 +101,14 @@ document.getElementById('gen').addEventListener('click', async () => {
   const bits = parseInt(document.getElementById('bits').value||'128');
   const format = document.getElementById('format').value;
   const ibm = document.getElementById('ibm').value;
-  result.textContent = 'Generating...';
+  result.innerHTML = '<span class="loading"></span> Generating...';
   try {
     const resp = await fetch(`/api/random?bits=${bits}&format=${format}&ibm=${ibm}`);
     const j = await resp.json();
-    if (j.error) result.textContent = 'Error: ' + j.error;
+    if (j.error) result.textContent = '❌ Error: ' + j.error;
     else result.textContent = JSON.stringify(j, null, 2);
   } catch (e) {
-    result.textContent = 'Request failed: ' + e;
+    result.textContent = '⚠️ Request failed: ' + e;
   }
 });
 
