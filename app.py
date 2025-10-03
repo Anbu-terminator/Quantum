@@ -1,122 +1,100 @@
-# server/app.py
-import os, base64, json
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pymongo import MongoClient
+import requests
+import os
+import base64
+import json
+import secrets
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
+from qiskit import QuantumCircuit, Aer, execute
+import config
 
-from config import *
-from quantum_key import start_rotator, get_current_key, get_key_by_id
-
-# start rotator on import
-start_rotator(interval=KEY_ROTATE_SECONDS, keep=KEEP_KEYS)
-
-app = Flask(__name__, static_folder="frontend", static_url_path="/")
+# Flask app
+app = Flask(__name__)
 CORS(app)
 
-# Mongo
-mongo = MongoClient(MONGODB_URI)
-db = mongo["quantum_iot"]
-cipher_collection = db["ciphertexts"]   # stores only ciphertexts
+# MongoDB
+client = MongoClient(config.MONGODB_URI)
+db = client["QuantumESP"]
+collection = db["SensorData"]
 
-# Serve frontend files (index.html, style.css, script.js)
-@app.route("/")
-def index():
-    return send_from_directory("frontend", "index.html")
+# In-memory key storage
+quantum_key_store = {}
 
-@app.route("/<path:path>")
-def static_files(path):
-    return send_from_directory("frontend", path)
+# --- Quantum Key Generation ---
+def generate_quantum_key():
+    qc = QuantumCircuit(4, 4)
+    qc.h(range(4))
+    qc.measure(range(4), range(4))
+    backend = Aer.get_backend("qasm_simulator")
+    result = execute(qc, backend, shots=1).result()
+    counts = result.get_counts()
+    key_bin = list(counts.keys())[0]
+    key_hex = hex(int(key_bin, 2))[2:].zfill(32)  # 16 bytes
+    return key_hex[:32], secrets.token_hex(16)  # key + iv
 
-# Endpoint: give current quantum key (hex) — requires auth token query param ?auth=...
 @app.route("/api/quantum_key", methods=["GET"])
-def api_quantum_key():
-    token = request.args.get("auth", "")
-    if token != ESP_AUTH_TOKEN:
-        return jsonify({"error":"unauthorized"}), 401
-    res = get_current_key()
-    if not res:
-        return jsonify({"error":"no_key_yet"}), 503
-    kid, key_bytes, iv_bytes = res
-    return jsonify({
-        "key_id": kid,
-        "key": key_bytes.hex(),
-        "iv": iv_bytes.hex()
-    })
+def get_quantum_key():
+    auth = request.args.get("auth")
+    if auth != config.ESP_AUTH_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
+    key, iv = generate_quantum_key()
+    quantum_key_store["latest"] = {"key": key, "iv": iv}
+    return jsonify({"key": key, "iv": iv})
 
-# Endpoint: ESP uploads ciphertext JSON: { token, key_id, iv (hex), cipher_b64, post_to_thingspeak (bool) }
-# Server stores ciphertext only (no decryption) and returns success.
+# --- Upload Encrypted Sensor Data ---
 @app.route("/api/upload", methods=["POST"])
-def api_upload():
+def upload():
     data = request.get_json()
-    if not data:
-        return jsonify({"error":"no_json"}), 400
-    token = data.get("token","")
-    if token != ESP_AUTH_TOKEN:
-        return jsonify({"error":"unauthorized"}), 401
-    key_id = data.get("key_id","")
-    iv_hex = data.get("iv","")
-    cipher_b64 = data.get("cipher_b64","")
-    post_ts = data.get("post_to_thingspeak", False)
+    if not data or data.get("token") != config.ESP_AUTH_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
 
-    if not cipher_b64 or not key_id:
-        return jsonify({"error":"missing"}), 400
-
-    doc = {
-        "key_id": key_id,
-        "iv": iv_hex,
-        "cipher_b64": cipher_b64,
-        "ts": __import__("time").time()
-    }
-    cipher_collection.insert_one(doc)
-
-    # Optionally post to ThingSpeak (store base64 in field1, key_id to field2)
-    if post_ts:
-        try:
-            import requests
-            ts_url = "https://api.thingspeak.com/update"
-            payload = {"api_key": THINGSPEAK_WRITE_KEY, "field1": cipher_b64, "field2": key_id}
-            r = requests.post(ts_url, data=payload, timeout=10)
-            doc["thingspeak_response"] = {"status_code": r.status_code, "text": r.text[:200]}
-        except Exception as e:
-            doc["thingspeak_error"] = str(e)
-            # continue
-
-    return jsonify({"status":"ok"})
-
-# Frontend: get latest ciphertexts (last N)
-@app.route("/api/latest", methods=["GET"])
-def api_latest():
-    limit = int(request.args.get("limit", "10"))
-    docs = list(cipher_collection.find({}, {"_id":0}).sort("ts",-1).limit(limit))
-    return jsonify(docs)
-
-# (Optional) Admin endpoint to get key info if you want server to decrypt (not used)
-@app.route("/api/decrypt_sample", methods=["POST"])
-def api_decrypt_sample():
-    # not used in secure mode — kept for debug (requires ESP_AUTH_TOKEN)
-    data = request.get_json()
-    token = data.get("token","")
-    if token != ESP_AUTH_TOKEN:
-        return jsonify({"error":"unauthorized"}), 401
-    key_id = data.get("key_id")
     cipher_b64 = data.get("cipher_b64")
-    if not key_id or not cipher_b64:
-        return jsonify({"error":"missing"}),400
-    keyinfo = get_key_by_id(key_id)
-    if not keyinfo:
-        return jsonify({"error":"no_such_key"}),404
-    key = keyinfo["key"]
-    iv = bytes.fromhex(data.get("iv", keyinfo["iv"].hex()))
-    ct = base64.b64decode(cipher_b64)
-    cipher = AES.new(key, AES.MODE_CBC, iv)
+    iv_hex = data.get("iv")
+    if not cipher_b64 or not iv_hex:
+        return jsonify({"error": "missing fields"}), 400
+
+    # Decode values
+    cipher_bytes = base64.b64decode(cipher_b64)
+    iv = bytes.fromhex(iv_hex)
+    key_hex = quantum_key_store.get("latest", {}).get("key")
+    if not key_hex:
+        return jsonify({"error": "no key"}), 500
+    key = bytes.fromhex(key_hex)
+
     try:
-        plain = unpad(cipher.decrypt(ct), AES.block_size).decode("utf-8")
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        plain = unpad(cipher.decrypt(cipher_bytes), AES.block_size)
+        sensor_data = json.loads(plain.decode("utf-8"))
     except Exception as e:
-        return jsonify({"error":"decrypt_failed","detail":str(e)}), 500
-    return jsonify({"plaintext": plain})
+        return jsonify({"error": f"decryption failed: {str(e)}"}), 500
+
+    # Store in MongoDB
+    collection.insert_one(sensor_data)
+
+    # Optionally push to ThingSpeak
+    if data.get("post_to_thingspeak", False):
+        try:
+            requests.post(
+                "http://api.thingspeak.com/update",
+                data={
+                    "api_key": config.THINGSPEAK_WRITE_KEY,
+                    "field1": sensor_data.get("temperature"),
+                    "field2": sensor_data.get("humidity"),
+                },
+                timeout=5,
+            )
+        except Exception as e:
+            print("ThingSpeak push failed:", e)
+
+    return jsonify({"status": "ok", "data": sensor_data})
+
+# --- Root ---
+@app.route("/")
+def home():
+    return "Quantum ESP Backend Running (HTTP - Insecure)"
 
 if __name__ == "__main__":
-    # Run on 0.0.0.0:5000 — when deploying to Render, Render will use its own port.
     app.run(host="0.0.0.0", port=5000, debug=True)
