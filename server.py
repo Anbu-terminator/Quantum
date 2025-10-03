@@ -8,6 +8,7 @@ from Crypto.Util.Padding import pad, unpad
 import config
 import quantum_key
 
+# Serve frontend directly
 app = Flask(__name__, static_folder="../frontend", static_url_path="/")
 CORS(app)
 
@@ -20,11 +21,10 @@ processed_col = db["processed_entries"] # track processed ThingSpeak entry_id
 # start quantum key rotator
 quantum_key.start_rotator()
 
-# helper: AES bytes from config.SERVER_AES_KEY_HEX
+# helper: AES bytes from config
 SERVER_AES_KEY = bytes.fromhex(config.SERVER_AES_KEY_HEX)
 
 THINGSPEAK_FEEDS_URL = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=20"
-
 POLL_INTERVAL = 15  # seconds
 
 def poll_thingspeak_loop():
@@ -38,29 +38,25 @@ def poll_thingspeak_loop():
                     entry_id = feed.get("entry_id")
                     if not entry_id:
                         continue
-                    # skip already processed
+
                     if processed_col.find_one({"entry_id": entry_id}):
                         continue
 
-                    # read fields
                     cipher_b64 = feed.get("field1") or ""
                     key_id = feed.get("field2") or ""
                     iv_hex  = feed.get("field3") or ""
                     token   = (feed.get("field4") or "").strip()
 
-                    # verify token
                     if token != config.ESP_AUTH_TOKEN:
                         print("[poll] token mismatch for entry", entry_id)
-                        # mark processed to avoid repeat attempts (or skip?)
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "bad_token"})
                         continue
 
                     if not cipher_b64 or not iv_hex:
-                        print("[poll] missing cipher or iv for entry", entry_id)
+                        print("[poll] missing cipher/iv for entry", entry_id)
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "missing_fields"})
                         continue
 
-                    # get quantum key by key_id (if present), else use latest
                     qinfo = None
                     if key_id:
                         qinfo = quantum_key.get_key_by_id(key_id)
@@ -80,8 +76,7 @@ def poll_thingspeak_loop():
                         iv = bytes.fromhex(iv_hex)
                         cipher = AES.new(qkey, AES.MODE_CBC, iv)
                         pt = unpad(cipher.decrypt(ct), AES.block_size)
-                        # pt is plaintext JSON bytes - convert to string (but we do NOT store plaintext)
-                        # Re-encrypt with SERVER_AES_KEY: we will encrypt a JSON object that contains the original quantum fields
+
                         original_payload = {
                             "cipher_b64": cipher_b64,
                             "key_id": key_id,
@@ -92,8 +87,7 @@ def poll_thingspeak_loop():
                         original_json = json.dumps(original_payload).encode("utf-8")
                         server_iv = os.urandom(16)
                         scipher = AES.new(SERVER_AES_KEY, AES.MODE_CBC, server_iv)
-                        scipher_padded = pad(original_json, AES.block_size)
-                        sct = scipher.encrypt(scipher_padded)
+                        sct = scipher.encrypt(pad(original_json, AES.block_size))
                         sct_b64 = base64.b64encode(sct).decode()
 
                         doc = {
@@ -108,7 +102,6 @@ def poll_thingspeak_loop():
                     except Exception as e:
                         print("[poll] decryption error for entry", entry_id, e)
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "decrypt_error", "err": str(e)})
-
             else:
                 print("[poll] thingspeak fetch status", r.status_code)
         except Exception as ex:
@@ -119,7 +112,7 @@ def poll_thingspeak_loop():
 t = threading.Thread(target=poll_thingspeak_loop, daemon=True)
 t.start()
 
-# ----- API endpoints -----
+# ---------------- API Endpoints ----------------
 
 @app.route("/api/quantum_key", methods=["GET"])
 def api_quantum_key():
@@ -151,14 +144,17 @@ def api_server_key():
         return jsonify({"error":"unauthorized"}), 401
     return jsonify({"server_key": config.SERVER_AES_KEY_HEX})
 
+# ---------------- Frontend Routes ----------------
+
 @app.route("/")
 def index():
-    return send_from_directory("../frontend", "index.html")
+    return send_from_directory(app.static_folder, "index.html")
 
 @app.route("/<path:path>")
 def static_files(path):
-    return send_from_directory("../frontend", path)
+    return send_from_directory(app.static_folder, path)
 
+# ---------------- Run ----------------
 if __name__ == "__main__":
-    # run HTTP (insecure) server as requested
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=True)
