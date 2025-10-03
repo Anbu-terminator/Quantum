@@ -13,6 +13,12 @@
   </header>
 
   <main>
+    <!-- Token Input & Fetch Button -->
+    <section class="controls">
+      <input type="text" id="token" placeholder="Paste your token here">
+      <button id="btnFetch">Fetch Latest</button>
+    </section>
+
     <!-- Live Sensor Data -->
     <section class="live-data">
       <h2>📡 Live Sensor Data</h2>
@@ -26,7 +32,7 @@
     <!-- History Section -->
     <section class="history">
       <h2>📜 History (Last 10 Records)</h2>
-      <div id="history-list"></div>
+      <pre id="out">No data fetched yet.</pre>
     </section>
   </main>
 
@@ -34,6 +40,7 @@
     <p>⚡ Powered by Quantum Randomness + AES + IoT | Q-SENSE 2025</p>
   </footer>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
