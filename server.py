@@ -8,25 +8,28 @@ from Crypto.Util.Padding import pad, unpad
 import config
 import quantum_key
 
-# Serve frontend directly
-app = Flask(__name__, static_folder="../frontend", static_url_path="/")
+# ----------------- FRONTEND STATIC PATH -----------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # /backend
+FRONTEND_DIR = os.path.join(BASE_DIR, "../frontend")    # /frontend absolute path
+
+app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
-# MongoDB connection
+# ----------------- DATABASE -----------------
 mongo = MongoClient(config.MONGODB_URI)
 db = mongo["q_sense_db"]
-stored_col = db["stored_ciphertexts"]   # stores server encrypted blob (no plaintext)
-processed_col = db["processed_entries"] # track processed ThingSpeak entry_id
+stored_col = db["stored_ciphertexts"]
+processed_col = db["processed_entries"]
 
-# start quantum key rotator
+# ----------------- QUANTUM KEY ROTATOR -----------------
 quantum_key.start_rotator()
 
-# helper: AES bytes from config
 SERVER_AES_KEY = bytes.fromhex(config.SERVER_AES_KEY_HEX)
-
 THINGSPEAK_FEEDS_URL = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=20"
 POLL_INTERVAL = 15  # seconds
 
+
+# ----------------- POLLING LOOP -----------------
 def poll_thingspeak_loop():
     while True:
         try:
@@ -44,8 +47,8 @@ def poll_thingspeak_loop():
 
                     cipher_b64 = feed.get("field1") or ""
                     key_id = feed.get("field2") or ""
-                    iv_hex  = feed.get("field3") or ""
-                    token   = (feed.get("field4") or "").strip()
+                    iv_hex = feed.get("field3") or ""
+                    token = (feed.get("field4") or "").strip()
 
                     if token != config.ESP_AUTH_TOKEN:
                         print("[poll] token mismatch for entry", entry_id)
@@ -75,7 +78,7 @@ def poll_thingspeak_loop():
                         ct = base64.b64decode(cipher_b64)
                         iv = bytes.fromhex(iv_hex)
                         cipher = AES.new(qkey, AES.MODE_CBC, iv)
-                        pt = unpad(cipher.decrypt(ct), AES.block_size)
+                        _ = unpad(cipher.decrypt(ct), AES.block_size)  # just validate
 
                         original_payload = {
                             "cipher_b64": cipher_b64,
@@ -108,12 +111,12 @@ def poll_thingspeak_loop():
             print("[poll] exception:", ex)
         time.sleep(POLL_INTERVAL)
 
-# start poller thread
+
 t = threading.Thread(target=poll_thingspeak_loop, daemon=True)
 t.start()
 
-# ---------------- API Endpoints ----------------
 
+# ----------------- API ENDPOINTS -----------------
 @app.route("/api/quantum_key", methods=["GET"])
 def api_quantum_key():
     auth = request.args.get("auth", "")
@@ -123,7 +126,7 @@ def api_quantum_key():
     if key_id:
         ki = quantum_key.get_key_by_id(key_id)
         if not ki:
-            return jsonify({"error":"no_such_key"}), 404
+            return jsonify({"error": "no_such_key"}), 404
         return jsonify({"key_id": key_id, "key": ki["key"].hex(), "iv": ki["iv"].hex()})
     cur = quantum_key.get_current_key()
     if not cur:
@@ -131,30 +134,34 @@ def api_quantum_key():
     kid, key_bytes, iv_bytes = cur
     return jsonify({"key_id": kid, "key": key_bytes.hex(), "iv": iv_bytes.hex()})
 
+
 @app.route("/api/latest", methods=["GET"])
 def api_latest():
     limit = int(request.args.get("limit", "20"))
     docs = list(stored_col.find({}, {"_id": 0}).sort("stored_at", -1).limit(limit))
     return jsonify(docs)
 
+
 @app.route("/api/server_key", methods=["GET"])
 def api_server_key():
     auth = request.args.get("auth", "")
     if auth != config.ESP_AUTH_TOKEN:
-        return jsonify({"error":"unauthorized"}), 401
+        return jsonify({"error": "unauthorized"}), 401
     return jsonify({"server_key": config.SERVER_AES_KEY_HEX})
 
-# ---------------- Frontend Routes ----------------
 
+# ----------------- FRONTEND ROUTES -----------------
 @app.route("/")
 def index():
-    return send_from_directory(app.static_folder, "index.html")
+    return send_from_directory(FRONTEND_DIR, "index.html")
+
 
 @app.route("/<path:path>")
 def static_files(path):
-    return send_from_directory(app.static_folder, path)
+    return send_from_directory(FRONTEND_DIR, path)
 
-# ---------------- Run ----------------
+
+# ----------------- RUN -----------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
