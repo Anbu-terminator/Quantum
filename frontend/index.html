@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Q-SENSE Dashboard</title>
   <link rel="stylesheet" href="style.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 </head>
 <body>
   <header>
@@ -13,26 +14,15 @@
   </header>
 
   <main>
-    <!-- Token Input & Fetch Button -->
-    <section class="controls">
-      <input type="text" id="token" placeholder="Paste your token here">
+    <section class="token-input">
+      <h2>Enter Token</h2>
+      <input type="text" id="token" placeholder="Paste ESP_AUTH_TOKEN" style="width: 300px;">
       <button id="btnFetch">Fetch Latest</button>
     </section>
 
-    <!-- Live Sensor Data -->
-    <section class="live-data">
-      <h2>📡 Live Sensor Data</h2>
-      <div class="card">
-        <p><strong>Temperature:</strong> <span id="temp">--</span> °C</p>
-        <p><strong>Humidity:</strong> <span id="hum">--</span> %</p>
-        <p><strong>Last Updated:</strong> <span id="time">--</span></p>
-      </div>
-    </section>
-
-    <!-- History Section -->
     <section class="history">
-      <h2>📜 History (Last 10 Records)</h2>
-      <pre id="out">No data fetched yet.</pre>
+      <h2>📜 Latest Records</h2>
+      <pre id="out" style="background: #f2f2f2; padding: 10px; max-height: 400px; overflow-y: scroll;"></pre>
     </section>
   </main>
 
@@ -40,7 +30,6 @@
     <p>⚡ Powered by Quantum Randomness + AES + IoT | Q-SENSE 2025</p>
   </footer>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
   <script src="script.js"></script>
 </body>
 </html>
