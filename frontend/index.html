@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Quantum AES IoT — Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="style.css">
+  <!-- CryptoJS for AES decryption in browser -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>⚛️ Quantum AES IoT Dashboard</h1>
+    <p class="muted">Sensor plaintext only appears in your browser after client-side decryption.</p>
+  </header>
+
+  <main class="container">
+    <section class="card">
+      <h2>Latest Encrypted Messages</h2>
+      <div id="list">Loading…</div>
+    </section>
+
+    <section class="card">
+      <h2>Decrypt (client-side)</h2>
+      <label>Enter token (server auth token):</label>
+      <input id="token" placeholder="ESP_AUTH_TOKEN" />
+      <button id="fetchKey">Fetch quantum key</button>
+      <div id="keyInfo" class="muted"></div>
+      <button id="decryptAll">Decrypt Latest</button>
+      <pre id="plaintext"></pre>
+    </section>
+  </main>
+
+  <footer>Hosted at https://quantum-5mo6.onrender.com/</footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

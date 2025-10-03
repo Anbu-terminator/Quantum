@@ -1,0 +1,8 @@
+Flask==2.3.2
+Flask-Cors==3.0.10
+pymongo==4.6.1
+pycryptodome==3.20.0
+qiskit==1.1.2
+qiskit-aer==0.14.2
+requests==2.31.0
+
