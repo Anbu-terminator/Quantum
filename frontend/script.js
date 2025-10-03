@@ -1,65 +1,81 @@
-// script.js — client-side decryption demo
-async function fetchLatest(limit=10){
-  const resp = await fetch('/api/latest?limit='+limit);
-  return resp.json();
+// script.js - client-side: fetch server-stored server-encrypted blobs and decrypt client-side
+const API_BASE = window.location.origin; // uses same host (http://quantum-5mo6.onrender.com)
+
+function hexToWordArray(hex) { return CryptoJS.enc.Hex.parse(hex); }
+function base64ToWordArray(b64) { return CryptoJS.enc.Base64.parse(b64); }
+
+async function fetchLatest() {
+  const r = await fetch(`${API_BASE}/api/latest?limit=10`);
+  return r.json();
 }
 
-function hexToWordArray(hex) {
-  return CryptoJS.enc.Hex.parse(hex);
+async function fetchServerKey(token) {
+  const r = await fetch(`${API_BASE}/api/server_key?auth=${encodeURIComponent(token)}`);
+  if (!r.ok) throw new Error("server_key fetch failed: " + r.status);
+  return r.json();
 }
 
-function base64ToWordArray(b64) {
-  return CryptoJS.enc.Base64.parse(b64);
+async function fetchQuantumKey(token, key_id) {
+  const r = await fetch(`${API_BASE}/api/quantum_key?auth=${encodeURIComponent(token)}&key_id=${encodeURIComponent(key_id)}`);
+  if (!r.ok) throw new Error("quantum_key fetch failed: " + r.status);
+  return r.json();
 }
 
-function decryptWithKeyBase64(cipher_b64, key_hex, iv_hex){
-  const keyWA = hexToWordArray(key_hex);
-  const ivWA = hexToWordArray(iv_hex);
-  const cipherWA = base64ToWordArray(cipher_b64);
-  const cipherParams = CryptoJS.lib.CipherParams.create({ciphertext: cipherWA});
-  const plainWA = CryptoJS.AES.decrypt(cipherParams, keyWA, { iv: ivWA, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-  return plainWA.toString(CryptoJS.enc.Utf8);
+// decrypt server AES to get original JSON payload (which includes original cipher_b64, key_id, iv)
+function decryptServerAES(server_cipher_b64, server_key_hex, server_iv_hex) {
+  const key = hexToWordArray(server_key_hex);
+  const iv = hexToWordArray(server_iv_hex);
+  const cipherWA = base64ToWordArray(server_cipher_b64);
+  const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
+  const decryptedWA = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+  const plaintext = decryptedWA.toString(CryptoJS.enc.Utf8);
+  return plaintext;
 }
 
-async function renderList(){
-  const arr = await fetchLatest(10);
-  const list = document.getElementById('list');
-  list.innerHTML = '';
-  if(!arr || arr.length===0){ list.innerHTML = '<p>No ciphertexts yet.</p>'; return; }
-  arr.forEach(item=>{
-    const p = document.createElement('p');
-    const t = new Date(item.ts*1000 || Date.now()).toLocaleString();
-    p.innerHTML = `<strong>key_id</strong>: ${item.key_id || ''} <br><small class="muted">${t}</small>`;
-    list.appendChild(p);
-  });
+// decrypt original quantum-encrypted ciphertext (base64) using quantum key hex + iv hex
+function decryptQuantumCipher(orig_cipher_b64, quantum_key_hex, iv_hex) {
+  const key = hexToWordArray(quantum_key_hex);
+  const iv = hexToWordArray(iv_hex);
+  const cipherWA = base64ToWordArray(orig_cipher_b64);
+  const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
+  const decryptedWA = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+  return decryptedWA.toString(CryptoJS.enc.Utf8);
 }
 
-document.getElementById('fetchKey').addEventListener('click', async ()=>{
+document.getElementById('btnFetch').addEventListener('click', async () => {
   const token = document.getElementById('token').value.trim();
-  if(!token){ alert('Enter token'); return; }
-  try{
-    const resp = await fetch(`/api/quantum_key?auth=${encodeURIComponent(token)}`);
-    if(!resp.ok){ alert('Key fetch failed: '+resp.status); return; }
-    const j = await resp.json();
-    document.getElementById('keyInfo').innerText = `key_id: ${j.key_id}\nkey(hex): ${j.key}\niv(hex): ${j.iv}`;
-    window._quantum_key = j; // store globally for decryptAll
-  }catch(e){ alert('Error: '+e); }
-});
+  if (!token) { alert('Paste token'); return; }
+  const outEl = document.getElementById('out');
+  outEl.textContent = "Fetching latest...";
+  try {
+    const docs = await fetchLatest();
+    if (!docs || docs.length === 0) { outEl.textContent = "No stored items yet."; return; }
 
-document.getElementById('decryptAll').addEventListener('click', async ()=>{
-  if(!window._quantum_key){ alert('Fetch quantum key first'); return; }
-  const arr = await fetchLatest(10);
-  const out = [];
-  for(const item of arr){
-    try{
-      const pt = decryptWithKeyBase64(item.cipher_b64, window._quantum_key.key, item.iv);
-      out.push({key_id:item.key_id, plaintext: pt, ts: item.ts});
-    }catch(e){
-      out.push({key_id:item.key_id, error: String(e)});
+    // fetch server key once
+    const serverKeyResp = await fetchServerKey(token);
+    const serverKeyHex = serverKeyResp.server_key;
+
+    const results = [];
+    for (const item of docs) {
+      try {
+        const splain = decryptServerAES(item.server_cipher_b64, serverKeyHex, item.server_iv_hex);
+        // splain is JSON string containing cipher_b64, key_id, iv
+        const obj = JSON.parse(splain);
+        const quantumResp = await fetchQuantumKey(token, obj.key_id || "");
+        const qkey = quantumResp.key;
+        // decrypt original
+        const finalPlain = decryptQuantumCipher(obj.cipher_b64, qkey, obj.iv);
+        results.push({
+          entry_id: item.entry_id,
+          stored_at: new Date(item.stored_at * 1000).toLocaleString(),
+          plaintext: JSON.parse(finalPlain)
+        });
+      } catch (e) {
+        results.push({ entry_id: item.entry_id, error: String(e) });
+      }
     }
+    outEl.textContent = JSON.stringify(results, null, 2);
+  } catch (err) {
+    outEl.textContent = "Error: " + err;
   }
-  document.getElementById('plaintext').innerText = JSON.stringify(out, null, 2);
 });
-
-renderList();
-setInterval(renderList, 5000);
