@@ -1,4 +1,4 @@
-# server/server.py
+# server.py
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from pymongo import MongoClient
@@ -9,8 +9,8 @@ import config
 import quantum_key
 
 # ----------------- FRONTEND STATIC PATH -----------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # /backend
-FRONTEND_DIR = os.path.join(BASE_DIR, "../frontend")    # /frontend absolute path
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))   # repo root
+FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")       # ./frontend
 
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
@@ -23,8 +23,8 @@ processed_col = db["processed_entries"]
 
 # ----------------- QUANTUM KEY ROTATOR -----------------
 quantum_key.start_rotator()
-
 SERVER_AES_KEY = bytes.fromhex(config.SERVER_AES_KEY_HEX)
+
 THINGSPEAK_FEEDS_URL = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=20"
 POLL_INTERVAL = 15  # seconds
 
@@ -51,12 +51,12 @@ def poll_thingspeak_loop():
                     token = (feed.get("field4") or "").strip()
 
                     if token != config.ESP_AUTH_TOKEN:
-                        print("[poll] token mismatch for entry", entry_id)
+                        print("[poll] token mismatch", entry_id)
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "bad_token"})
                         continue
 
                     if not cipher_b64 or not iv_hex:
-                        print("[poll] missing cipher/iv for entry", entry_id)
+                        print("[poll] missing cipher/iv", entry_id)
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "missing_fields"})
                         continue
 
@@ -78,7 +78,7 @@ def poll_thingspeak_loop():
                         ct = base64.b64decode(cipher_b64)
                         iv = bytes.fromhex(iv_hex)
                         cipher = AES.new(qkey, AES.MODE_CBC, iv)
-                        _ = unpad(cipher.decrypt(ct), AES.block_size)  # just validate
+                        _ = unpad(cipher.decrypt(ct), AES.block_size)
 
                         original_payload = {
                             "cipher_b64": cipher_b64,
@@ -101,12 +101,12 @@ def poll_thingspeak_loop():
                         }
                         stored_col.insert_one(doc)
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "ok"})
-                        print("[poll] processed entry", entry_id)
+                        print("[poll] processed", entry_id)
                     except Exception as e:
-                        print("[poll] decryption error for entry", entry_id, e)
+                        print("[poll] decryption error", entry_id, e)
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "decrypt_error", "err": str(e)})
             else:
-                print("[poll] thingspeak fetch status", r.status_code)
+                print("[poll] thingspeak status", r.status_code)
         except Exception as ex:
             print("[poll] exception:", ex)
         time.sleep(POLL_INTERVAL)
@@ -158,7 +158,10 @@ def index():
 
 @app.route("/<path:path>")
 def static_files(path):
-    return send_from_directory(FRONTEND_DIR, path)
+    file_path = os.path.join(FRONTEND_DIR, path)
+    if os.path.exists(file_path):
+        return send_from_directory(FRONTEND_DIR, path)
+    return send_from_directory(FRONTEND_DIR, "index.html")
 
 
 # ----------------- RUN -----------------
