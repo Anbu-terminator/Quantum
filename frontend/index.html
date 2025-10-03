@@ -1,37 +1,38 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Quantum AES IoT — Dashboard</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Q-SENSE Dashboard</title>
   <link rel="stylesheet" href="style.css">
-  <!-- CryptoJS for AES decryption in browser -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 </head>
 <body>
   <header>
-    <h1>⚛️ Quantum AES IoT Dashboard</h1>
-    <p class="muted">Sensor plaintext only appears in your browser after client-side decryption.</p>
+    <h1>🌐 Q-SENSE IoT Dashboard</h1>
+    <p>Quantum + AES Encrypted IoT Monitoring</p>
   </header>
 
-  <main class="container">
-    <section class="card">
-      <h2>Latest Encrypted Messages</h2>
-      <div id="list">Loading…</div>
+  <main>
+    <!-- Live Sensor Data -->
+    <section class="live-data">
+      <h2>📡 Live Sensor Data</h2>
+      <div class="card">
+        <p><strong>Temperature:</strong> <span id="temp">--</span> °C</p>
+        <p><strong>Humidity:</strong> <span id="hum">--</span> %</p>
+        <p><strong>Last Updated:</strong> <span id="time">--</span></p>
+      </div>
     </section>
 
-    <section class="card">
-      <h2>Decrypt (client-side)</h2>
-      <label>Enter token (server auth token):</label>
-      <input id="token" placeholder="ESP_AUTH_TOKEN" />
-      <button id="fetchKey">Fetch quantum key</button>
-      <div id="keyInfo" class="muted"></div>
-      <button id="decryptAll">Decrypt Latest</button>
-      <pre id="plaintext"></pre>
+    <!-- History Section -->
+    <section class="history">
+      <h2>📜 History (Last 10 Records)</h2>
+      <div id="history-list"></div>
     </section>
   </main>
 
-  <footer>Hosted at https://quantum-5mo6.onrender.com/</footer>
+  <footer>
+    <p>⚡ Powered by Quantum Randomness + AES + IoT | Q-SENSE 2025</p>
+  </footer>
 
   <script src="script.js"></script>
 </body>
