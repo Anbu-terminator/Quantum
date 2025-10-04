@@ -1,8 +1,13 @@
-# server.py (updated)
+# server.py
+import os
+import time
+import json
+import base64
+import threading
+import hashlib
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from pymongo import MongoClient
-import requests, json, time, base64, threading, os, hashlib
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad, unpad
 import quantum_key
@@ -14,18 +19,18 @@ FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
-# ---------------- DB ----------------
+# ----------------- Database -----------------
 mongo = MongoClient(config.MONGODB_URI)
 db = mongo["q_sense_db"]
 stored_col = db["stored_ciphertexts"]
 processed_col = db["processed_entries"]
 
-# ---------------- Keys & rotator ----------------
+# ----------------- Key rotator -----------------
 quantum_key.start_rotator()
 SERVER_AES_KEY = bytes.fromhex(config.SERVER_AES_KEY_HEX)
 
 THINGSPEAK_FEEDS_URL = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=20"
-POLL_INTERVAL = 15
+POLL_INTERVAL = 15  # seconds
 
 def derive_session_key_from_qkey_and_nonce(qkey_bytes: bytes, nonce_bytes: bytes) -> bytes:
     """KDF: SHA256(qkey || nonce) and take first 16 bytes."""
@@ -33,21 +38,25 @@ def derive_session_key_from_qkey_and_nonce(qkey_bytes: bytes, nonce_bytes: bytes
     return h[:16]
 
 def poll_thingspeak_loop():
+    """Poll ThingSpeak feeds, decrypt using per-message derived session key, wrap with server AES and store."""
     while True:
         try:
+            import requests
             r = requests.get(THINGSPEAK_FEEDS_URL, timeout=10)
             if r.status_code == 200:
                 feeds = r.json().get("feeds", [])
                 for feed in feeds:
                     entry_id = feed.get("entry_id")
-                    if not entry_id or processed_col.find_one({"entry_id": entry_id}):
+                    if not entry_id:
+                        continue
+                    if processed_col.find_one({"entry_id": entry_id}):
                         continue
 
-                    cipher_b64 = feed.get("field1", "")   # ciphertext
-                    key_id = (feed.get("field2") or "").strip()  # key id
+                    cipher_b64 = feed.get("field1", "") or ""
+                    key_id = (feed.get("field2") or "").strip()
                     iv_hex = (feed.get("field3") or "").strip()
                     token = (feed.get("field4") or "").strip()
-                    nonce_hex = (feed.get("field5") or "").strip()  # NEW: nonce from ESP
+                    nonce_hex = (feed.get("field5") or "").strip()
 
                     if token != config.ESP_AUTH_TOKEN:
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "bad_token"})
@@ -59,7 +68,7 @@ def poll_thingspeak_loop():
                         print("[poll] missing fields", entry_id)
                         continue
 
-                    # find quantum key bytes
+                    # get qkey bytes (by id or current)
                     qinfo = quantum_key.get_key_by_id(key_id) if key_id else None
                     if not qinfo:
                         cur = quantum_key.get_current_key()
@@ -68,7 +77,7 @@ def poll_thingspeak_loop():
                             qinfo = {"key": qbytes, "iv": qiv}
                         else:
                             processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "no_key"})
-                            print("[poll] no quantum key available", entry_id)
+                            print("[poll] no quantum key", entry_id)
                             continue
 
                     try:
@@ -76,14 +85,11 @@ def poll_thingspeak_loop():
                         iv_bytes = bytes.fromhex(iv_hex)
                         nonce_bytes = bytes.fromhex(nonce_hex)
 
-                        # derive session key
                         derived_key = derive_session_key_from_qkey_and_nonce(qinfo["key"], nonce_bytes)
-
-                        # decrypt with derived key
                         cipher = AES.new(derived_key, AES.MODE_CBC, iv_bytes)
-                        _ = unpad(cipher.decrypt(ct), AES.block_size)  # will raise if invalid
+                        decrypted = unpad(cipher.decrypt(ct), AES.block_size)  # will raise if bad
 
-                        # successful decryption -> prepare original payload to be server-encrypted and stored
+                        # if decryption succeeds, create original_payload (as JSON)
                         original_payload = {
                             "cipher_b64": cipher_b64,
                             "key_id": key_id,
@@ -93,6 +99,8 @@ def poll_thingspeak_loop():
                             "received_at": feed.get("created_at")
                         }
                         original_json = json.dumps(original_payload).encode("utf-8")
+
+                        # server-side wrap using SERVER_AES_KEY (so frontend must fetch server key to unwrap)
                         server_iv = os.urandom(16)
                         scipher = AES.new(SERVER_AES_KEY, AES.MODE_CBC, server_iv)
                         sct = scipher.encrypt(pad(original_json, AES.block_size))
@@ -113,12 +121,13 @@ def poll_thingspeak_loop():
             else:
                 print("[poll] thingspeak status", r.status_code)
         except Exception as ex:
-            print("[poll] exception:", ex)
+            print("[poll] exception", ex)
         time.sleep(POLL_INTERVAL)
 
+# Start poller thread
 threading.Thread(target=poll_thingspeak_loop, daemon=True).start()
 
-# ----------------- API ENDPOINTS -----------------
+# ----------------- API -----------------
 @app.route("/api/quantum_key", methods=["GET"])
 def api_quantum_key():
     auth = request.args.get("auth", "")
@@ -149,12 +158,11 @@ def api_server_key():
         return jsonify({"error": "unauthorized"}), 401
     return jsonify({"server_key": config.SERVER_AES_KEY_HEX})
 
-# Simple health check
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": time.time()})
 
-# ----------------- FRONTEND ROUTES -----------------
+# Frontend routes
 @app.route("/")
 def index():
     return send_from_directory(FRONTEND_DIR, "index.html")
@@ -166,7 +174,6 @@ def static_files(path):
         return send_from_directory(FRONTEND_DIR, path)
     return send_from_directory(FRONTEND_DIR, "index.html")
 
-# ----------------- RUN -----------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     print(f"Starting server on 0.0.0.0:{port}, frontend dir={FRONTEND_DIR}")
