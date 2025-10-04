@@ -1,4 +1,4 @@
-// script.js (updated)
+// script.js (final fix)
 const API_BASE = window.location.origin;
 
 function hexToWordArray(hex) { return CryptoJS.enc.Hex.parse(hex); }
@@ -19,32 +19,19 @@ async function fetchServerKey(token) {
   return r.json();
 }
 
-async function fetchQuantumKey(token, key_id) {
-  const r = await fetch(`${API_BASE}/api/quantum_key?auth=${encodeURIComponent(token)}&key_id=${encodeURIComponent(key_id)}`);
-  if (!r.ok) {
-    const txt = await r.text().catch(()=>"");
-    throw new Error("Quantum key fetch failed: " + r.status + " " + txt);
-  }
-  return r.json();
-}
-
 function decryptServerAES_base64(server_cipher_b64, server_key_hex, server_iv_hex) {
-  // base64 -> WordArray -> decrypt with hex key + hex iv
   const keyWA = hexToWordArray(server_key_hex);
   const ivWA = hexToWordArray(server_iv_hex);
   const cipherWA = base64ToWordArray(server_cipher_b64);
   const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
   const decryptedWA = CryptoJS.AES.decrypt(cipherParams, keyWA, { iv: ivWA, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-  if (!decryptedWA || decryptedWA.sigBytes === 0) {
-    throw new Error("Server unwrap produced empty/invalid bytes");
-  }
+  if (!decryptedWA || decryptedWA.sigBytes === 0) throw new Error("Server unwrap invalid");
   const txt = decryptedWA.toString(CryptoJS.enc.Utf8);
-  if (!txt) throw new Error("Server unwrap yielded non-UTF8 or empty string");
+  if (!txt) throw new Error("Server unwrap non-UTF8");
   return txt;
 }
 
 function deriveSessionKeyHex(qkey_hex, nonce_hex) {
-  // SHA256(qkey_bytes || nonce_bytes) and take first 16 bytes (32 hex chars)
   const concatWA = CryptoJS.enc.Hex.parse(qkey_hex + nonce_hex);
   const hashHex = CryptoJS.SHA256(concatWA).toString(CryptoJS.enc.Hex);
   return hashHex.substring(0, 32);
@@ -56,11 +43,9 @@ function decryptOriginalWithDerivedKey_base64(orig_cipher_b64, derived_key_hex, 
   const cipherWA = base64ToWordArray(orig_cipher_b64);
   const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
   const decryptedWA = CryptoJS.AES.decrypt(cipherParams, keyWA, { iv: ivWA, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-  if (!decryptedWA || decryptedWA.sigBytes === 0) {
-    throw new Error("Original unwrap produced empty/invalid bytes (likely wrong key/iv)");
-  }
+  if (!decryptedWA || decryptedWA.sigBytes === 0) throw new Error("Original unwrap invalid");
   const txt = decryptedWA.toString(CryptoJS.enc.Utf8);
-  if (!txt) throw new Error("Original unwrap yielded non-UTF8 or empty string");
+  if (!txt) throw new Error("Original unwrap non-UTF8");
   return txt;
 }
 
@@ -105,21 +90,19 @@ document.getElementById('btnFetch').addEventListener('click', async () => {
     const results = [];
     for (const item of docs) {
       try {
-        // 1) Unwrap server encryption (server_cipher_b64 is base64 text)
+        // 1) unwrap server AES
         const serverPlain = decryptServerAES_base64(item.server_cipher_b64, serverKeyHex, item.server_iv_hex);
-        const obj = JSON.parse(serverPlain); // obj: { cipher_b64, key_id, iv, nonce, qkey_hex, ... }
+        const obj = JSON.parse(serverPlain);
 
-        // 2) Get qkey_hex: prefer qkey_hex embedded in stored original payload; fallback to API
-        let qkey_hex = obj.qkey_hex;
-        if (!qkey_hex || qkey_hex.length < 32) {
-          if (!obj.key_id) throw new Error("no qkey_hex in server payload and no key_id to fetch");
-          const qResp = await fetchQuantumKey(token, obj.key_id);
-          qkey_hex = qResp.key;
+        // 2) require qkey_hex (always present in new records)
+        const qkey_hex = obj.qkey_hex;
+        if (!qkey_hex) {
+          throw new Error("Old record: missing qkey_hex (cannot decrypt)");
         }
 
-        if (!obj.nonce) throw new Error("missing nonce in stored payload");
+        if (!obj.nonce) throw new Error("missing nonce");
 
-        // 3) derive session key and decrypt original ciphertext (base64)
+        // 3) derive session key and decrypt original
         const derived_hex = deriveSessionKeyHex(qkey_hex, obj.nonce);
         const finalPlain = decryptOriginalWithDerivedKey_base64(obj.cipher_b64, derived_hex, obj.iv);
 
@@ -129,8 +112,7 @@ document.getElementById('btnFetch').addEventListener('click', async () => {
           sensor_data: JSON.parse(finalPlain)
         });
       } catch (e) {
-        // keep error message concise but include inner message
-        results.push({ entry_id: item.entry_id, error: "Error: " + (e && e.message ? e.message : String(e)) });
+        results.push({ entry_id: item.entry_id, error: "Error: " + (e.message || String(e)) });
       }
     }
 
