@@ -1,4 +1,4 @@
-# server.py
+# server.py (updated)
 import os
 import time
 import json
@@ -19,13 +19,13 @@ FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
-# ----------------- Database -----------------
+# Database
 mongo = MongoClient(config.MONGODB_URI)
 db = mongo["q_sense_db"]
 stored_col = db["stored_ciphertexts"]
 processed_col = db["processed_entries"]
 
-# ----------------- Key rotator -----------------
+# Start quantum key rotator
 quantum_key.start_rotator()
 SERVER_AES_KEY = bytes.fromhex(config.SERVER_AES_KEY_HEX)
 
@@ -33,15 +33,17 @@ THINGSPEAK_FEEDS_URL = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_C
 POLL_INTERVAL = 15  # seconds
 
 def derive_session_key_from_qkey_and_nonce(qkey_bytes: bytes, nonce_bytes: bytes) -> bytes:
-    """KDF: SHA256(qkey || nonce) and take first 16 bytes."""
+    """KDF: SHA256(qkey || nonce) -> first 16 bytes"""
     h = hashlib.sha256(qkey_bytes + nonce_bytes).digest()
     return h[:16]
 
 def poll_thingspeak_loop():
-    """Poll ThingSpeak feeds, decrypt using per-message derived session key, wrap with server AES and store."""
+    """Poll ThingSpeak, verify token, derive session key and attempt to decrypt each feed entry.
+       If decrypted OK, wrap original payload (includes qkey_hex!) with SERVER_AES_KEY and store.
+    """
+    import requests
     while True:
         try:
-            import requests
             r = requests.get(THINGSPEAK_FEEDS_URL, timeout=10)
             if r.status_code == 200:
                 feeds = r.json().get("feeds", [])
@@ -58,26 +60,28 @@ def poll_thingspeak_loop():
                     token = (feed.get("field4") or "").strip()
                     nonce_hex = (feed.get("field5") or "").strip()
 
+                    # validate token
                     if token != config.ESP_AUTH_TOKEN:
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "bad_token"})
                         print("[poll] token mismatch", entry_id)
                         continue
 
+                    # fields required
                     if not cipher_b64 or not iv_hex or not nonce_hex:
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "missing_fields"})
                         print("[poll] missing fields", entry_id)
                         continue
 
-                    # get qkey bytes (by id or current)
+                    # find quantum key (requested key_id or current)
                     qinfo = quantum_key.get_key_by_id(key_id) if key_id else None
                     if not qinfo:
                         cur = quantum_key.get_current_key()
                         if cur:
                             kid, qbytes, qiv = cur
-                            qinfo = {"key": qbytes, "iv": qiv}
+                            qinfo = {"key": qbytes, "iv": qiv, "key_id": kid}
                         else:
                             processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "no_key"})
-                            print("[poll] no quantum key", entry_id)
+                            print("[poll] no quantum key available", entry_id)
                             continue
 
                     try:
@@ -85,22 +89,24 @@ def poll_thingspeak_loop():
                         iv_bytes = bytes.fromhex(iv_hex)
                         nonce_bytes = bytes.fromhex(nonce_hex)
 
+                        # derive session key and try to decrypt (this verifies the ESP used the right key/nonce)
                         derived_key = derive_session_key_from_qkey_and_nonce(qinfo["key"], nonce_bytes)
                         cipher = AES.new(derived_key, AES.MODE_CBC, iv_bytes)
-                        decrypted = unpad(cipher.decrypt(ct), AES.block_size)  # will raise if bad
+                        plaintext = unpad(cipher.decrypt(ct), AES.block_size)  # will raise if padding wrong
 
-                        # if decryption succeeds, create original_payload (as JSON)
+                        # If decryption succeeded, prepare original payload with qkey_hex included.
                         original_payload = {
                             "cipher_b64": cipher_b64,
-                            "key_id": key_id,
+                            "key_id": key_id or qinfo.get("key_id", ""),
                             "iv": iv_hex,
                             "nonce": nonce_hex,
+                            "qkey_hex": qinfo["key"].hex(),    # <-- include quantum key hex here (so frontend doesn't need to request it)
                             "thingspeak_entry_id": entry_id,
                             "received_at": feed.get("created_at")
                         }
                         original_json = json.dumps(original_payload).encode("utf-8")
 
-                        # server-side wrap using SERVER_AES_KEY (so frontend must fetch server key to unwrap)
+                        # server-wrap it using SERVER_AES_KEY (CBC + PKCS7) and store base64
                         server_iv = os.urandom(16)
                         scipher = AES.new(SERVER_AES_KEY, AES.MODE_CBC, server_iv)
                         sct = scipher.encrypt(pad(original_json, AES.block_size))
@@ -116,18 +122,19 @@ def poll_thingspeak_loop():
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "ok"})
                         print("[poll] processed", entry_id)
                     except Exception as e:
+                        # decryption failed — record decrypt_error and continue
                         print("[poll] decrypt error", entry_id, str(e))
                         processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "decrypt_error", "err": str(e)})
             else:
                 print("[poll] thingspeak status", r.status_code)
         except Exception as ex:
-            print("[poll] exception", ex)
+            print("[poll] exception:", ex)
         time.sleep(POLL_INTERVAL)
 
-# Start poller thread
+# start poller
 threading.Thread(target=poll_thingspeak_loop, daemon=True).start()
 
-# ----------------- API -----------------
+# ------------ API endpoints ------------
 @app.route("/api/quantum_key", methods=["GET"])
 def api_quantum_key():
     auth = request.args.get("auth", "")
@@ -162,7 +169,6 @@ def api_server_key():
 def health():
     return jsonify({"status": "ok", "time": time.time()})
 
-# Frontend routes
 @app.route("/")
 def index():
     return send_from_directory(FRONTEND_DIR, "index.html")
