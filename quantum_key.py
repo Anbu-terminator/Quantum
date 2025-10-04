@@ -1,15 +1,14 @@
 # quantum_key.py
-# Maintains a small rotating store of "quantum" keys (key bytes + iv + ts).
-# Tries to use Qiskit/AerSimulator if available; falls back to os.urandom.
+# Maintains a rotating store of "quantum" keys (16 bytes each).
+# Uses qiskit if available, otherwise falls back to os.urandom.
 
 import math
 import time
 import threading
 import os
-import random
 from collections import OrderedDict
 
-# Try to import qiskit; if not available, we'll fallback
+# Try to use Qiskit/AerSimulator if installed; otherwise fallback
 try:
     from qiskit import QuantumCircuit
     from qiskit_aer import AerSimulator
@@ -22,12 +21,10 @@ CURRENT_KEY_ID = None
 _LOCK = threading.Lock()
 
 def _generate_key_bytes(num_bits=128):
-    """Generate num_bits of randomness. Prefer quantum (qiskit) if available,
-       otherwise fall back to os.urandom/random."""
+    """Return num_bits of randomness (as bytes). Prefer quantum if available."""
     if num_bits <= 0:
         return b""
 
-    # Qiskit approach produces bits; but if Qiskit not available, use os.urandom
     if _QISKIT_AVAILABLE:
         try:
             max_qubits = 25
@@ -44,7 +41,7 @@ def _generate_key_bytes(num_bits=128):
                 res = job.result()
                 counts = res.get_counts()
                 measured = next(iter(counts.keys()))
-                # measured string orientation depends on backend; just extend bits
+                # measured is a string of bits
                 bits.extend(list(measured))
             bits = bits[:num_bits]
             bitstring = ''.join(bits)
@@ -53,19 +50,19 @@ def _generate_key_bytes(num_bits=128):
             b = int(bitstring_padded, 2).to_bytes(len(bitstring_padded) // 8, byteorder='big')
             return b
         except Exception:
-            # fallback to os.urandom below
+            # fall through to os.urandom fallback
             pass
 
-    # deterministic fallback using os.urandom
+    # fallback using os.urandom
     bytelen = (num_bits + 7) // 8
     return os.urandom(bytelen)
 
 def _rotate_loop(interval, keep):
-    """Background thread that rotates keys every `interval` seconds and keeps `keep` keys."""
+    """Background thread: generate new key every `interval` seconds and keep last `keep` keys."""
     global CURRENT_KEY_ID
     while True:
         try:
-            key_bytes = _generate_key_bytes(128)[:16]  # 16 bytes
+            key_bytes = _generate_key_bytes(128)[:16]
             iv = os.urandom(16)
             kid = str(int(time.time()))
             with _LOCK:
@@ -79,6 +76,7 @@ def _rotate_loop(interval, keep):
         time.sleep(interval)
 
 def start_rotator(interval=None, keep=None):
+    """Start background rotator thread. interval seconds, keep recent keys."""
     if interval is None:
         try:
             import config
@@ -95,6 +93,7 @@ def start_rotator(interval=None, keep=None):
     t.start()
 
 def get_current_key():
+    """Return (key_id, key_bytes, iv_bytes) for current key or None if none."""
     with _LOCK:
         if CURRENT_KEY_ID is None:
             return None
@@ -102,5 +101,6 @@ def get_current_key():
         return CURRENT_KEY_ID, info["key"], info["iv"]
 
 def get_key_by_id(kid):
+    """Return { key: bytes, iv: bytes, ts: float } or None."""
     with _LOCK:
         return KEYS.get(kid)
