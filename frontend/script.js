@@ -28,28 +28,30 @@ async function fetchQuantumKey(token, key_id) {
   return r.json();
 }
 
-function decryptServerAES(server_cipher_b64, server_key_hex, server_iv_hex) {
-  const key = hexToWordArray(server_key_hex);
-  const iv = hexToWordArray(server_iv_hex);
+function decryptServerAES_base64(server_cipher_b64, server_key_hex, server_iv_hex) {
+  // server_cipher_b64 is base64 text
+  const keyWA = hexToWordArray(server_key_hex);
+  const ivWA = hexToWordArray(server_iv_hex);
   const cipherWA = base64ToWordArray(server_cipher_b64);
   const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
-  const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-  return decrypted.toString(CryptoJS.enc.Utf8);
+  const decryptedWA = CryptoJS.AES.decrypt(cipherParams, keyWA, { iv: ivWA, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+  return decryptedWA.toString(CryptoJS.enc.Utf8);
 }
 
 function deriveSessionKeyHex(qkey_hex, nonce_hex) {
+  // compute SHA256(qkey_bytes || nonce_bytes) then take first 16 bytes -> 32 hex chars
   const concatWA = CryptoJS.enc.Hex.parse(qkey_hex + nonce_hex);
   const hashHex = CryptoJS.SHA256(concatWA).toString(CryptoJS.enc.Hex);
   return hashHex.substring(0, 32);
 }
 
-function decryptOriginalWithDerivedKey(orig_cipher_b64, derived_key_hex, iv_hex) {
+function decryptOriginalWithDerivedKey_base64(orig_cipher_b64, derived_key_hex, iv_hex) {
   const keyWA = hexToWordArray(derived_key_hex);
   const ivWA = hexToWordArray(iv_hex);
   const cipherWA = base64ToWordArray(orig_cipher_b64);
   const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
-  const decrypted = CryptoJS.AES.decrypt(cipherParams, keyWA, { iv: ivWA, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-  return decrypted.toString(CryptoJS.enc.Utf8);
+  const decryptedWA = CryptoJS.AES.decrypt(cipherParams, keyWA, { iv: ivWA, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+  return decryptedWA.toString(CryptoJS.enc.Utf8);
 }
 
 function renderTable(results) {
@@ -93,24 +95,27 @@ document.getElementById('btnFetch').addEventListener('click', async () => {
     const results = [];
     for (const item of docs) {
       try {
-        const serverPlain = decryptServerAES(item.server_cipher_b64, serverKeyHex, item.server_iv_hex);
-        const obj = JSON.parse(serverPlain); // { cipher_b64, key_id, iv, nonce }
+        // 1) unwrap server encryption (server_cipher_b64 is base64 text)
+        const serverPlain = decryptServerAES_base64(item.server_cipher_b64, serverKeyHex, item.server_iv_hex);
+        const obj = JSON.parse(serverPlain); // obj: { cipher_b64, key_id, iv, nonce, ... }
 
+        // 2) get quantum key by id
         const qResp = await fetchQuantumKey(token, obj.key_id);
         const qkey_hex = qResp.key;
 
         if (!obj.nonce) throw new Error("missing nonce");
 
+        // 3) derive session key hex and decrypt original ciphertext (base64)
         const derived_hex = deriveSessionKeyHex(qkey_hex, obj.nonce);
+        const finalPlain = decryptOriginalWithDerivedKey_base64(obj.cipher_b64, derived_hex, obj.iv);
 
-        const finalPlain = decryptOriginalWithDerivedKey(obj.cipher_b64, derived_hex, obj.iv);
         results.push({
           entry_id: item.entry_id,
           stored_at: new Date(item.stored_at * 1000).toLocaleString(),
           sensor_data: JSON.parse(finalPlain)
         });
       } catch (e) {
-        results.push({ entry_id: item.entry_id, error: String(e) });
+        results.push({ entry_id: item.entry_id, error: "Error: " + String(e) });
       }
     }
 
