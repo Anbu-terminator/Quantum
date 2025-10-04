@@ -1,19 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Q-SENSE Dashboard</title>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-  <style>
-    body { font-family: Arial, sans-serif; margin: 20px; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-    th, td { border: 1px solid #ccc; padding: 8px; text-align: center; }
-    th { background-color: #f2f2f2; }
-    #status { margin-top: 10px; font-weight: bold; color: #333; }
-    input, button { padding: 6px; margin-right: 6px; }
-  </style>
 </head>
 <body>
   <header>
@@ -24,7 +16,7 @@
   <main>
     <section class="token-input">
       <h2>Enter Token</h2>
-      <input type="text" id="token" placeholder="Paste ESP_AUTH_TOKEN" style="width: 300px;">
+      <input type="text" id="token" placeholder="Paste ESP_AUTH_TOKEN" style="width: 320px;" />
       <button id="btnFetch">Fetch Latest</button>
       <span id="status"></span>
     </section>
@@ -38,13 +30,15 @@
             <th>Stored At</th>
             <th>Temperature (°C)</th>
             <th>Humidity (%)</th>
+            <th>IR</th>
             <th>Error</th>
           </tr>
         </thead>
-        <tbody>
-          <!-- rows inserted dynamically -->
-        </tbody>
+        <tbody></tbody>
       </table>
+
+      <h3>Debug / Raw</h3>
+      <pre id="out" style="max-height:220px; overflow:auto; background: rgba(0,0,0,0.35); padding:10px; border-radius:6px;"></pre>
     </section>
   </main>
 
