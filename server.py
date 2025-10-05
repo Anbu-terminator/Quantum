@@ -1,11 +1,11 @@
-# server.py
-import os, json, base64
+# server/server.py
+import os, base64, traceback
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import requests
-from Crypto.Cipher import AES
 import quantum_key
 import config
+from Crypto.Cipher import AES
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
@@ -13,101 +13,66 @@ FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
-# Start rotator
 quantum_key.start_rotator()
 
-THINGSPEAK_FEEDS_URL = (
-    f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json"
-    f"?api_key={config.THINGSPEAK_READ_KEY}&results=20"
-)
-
-def decrypt_field(cipher_b64, key_bytes, iv_bytes):
-    if not cipher_b64 or not key_bytes or not iv_bytes:
-        return None, "no_data_or_key"
+def aes_decrypt(ciphertext_b64, key_bytes, iv_bytes):
     try:
-        cipher_bytes = base64.b64decode(cipher_b64)
-        cipher = AES.new(key_bytes, AES.MODE_CTR, nonce=iv_bytes)
-        decrypted_bytes = cipher.decrypt(cipher_bytes)
-        try:
-            return decrypted_bytes.decode("utf-8"), None
-        except UnicodeDecodeError:
-            return None, "malformed_utf8"
+        cipher = AES.new(key_bytes, AES.MODE_CBC, iv_bytes)
+        ct_bytes = base64.b64decode(ciphertext_b64)
+        pt = cipher.decrypt(ct_bytes)
+        pad_len = pt[-1]
+        return pt[:-pad_len].decode("utf-8")
     except Exception:
-        return None, "decrypt_failed"
+        return None
 
-@app.route("/api/latest", methods=["GET"])
+@app.route("/api/latest")
 def api_latest():
     try:
-        r = requests.get(THINGSPEAK_FEEDS_URL, timeout=12)
-        if r.status_code != 200:
-            return jsonify({"error": "thingspeak_fetch_failed", "status": r.status_code}), 502
-
-        data = r.json()
-        feeds = data.get("feeds", []) or []
-
+        url = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=50"
+        r = requests.get(url, timeout=10)
+        feeds = r.json().get("feeds", [])
         cur = quantum_key.get_current_key()
-        cur_kid = cur_key_bytes = cur_iv_bytes = None
-        if cur:
-            cur_kid, cur_key_bytes, cur_iv_bytes = cur
-
-        all_keys = quantum_key.get_all_keys()
-
+        cur_kid, cur_key_bytes, cur_iv = (cur or (None, None, None))
         out = []
         for f in feeds:
             entry_id = f.get("entry_id")
             field1 = f.get("field1")
-            field2 = (f.get("field2") or "").strip()
-            field3 = (f.get("field3") or "").strip()
-            field4 = (f.get("field4") or "").strip()
-            field5 = (f.get("field5") or "").strip()
+            field2 = f.get("field2")
+            ki = quantum_key.get_key_by_id(field2)
+            if ki:
+                key_bytes = ki["key"]
+                iv_bytes = ki["iv"]
+                key_used = "exact"
+            elif cur_key_bytes:
+                key_bytes = cur_key_bytes
+                iv_bytes = cur_iv
+                key_used = "fallback"
+            else:
+                key_bytes = None
+                iv_bytes = None
+                key_used = None
 
-            decrypted_text = None
-            decrypt_error = None
-            key_used = None
-            qkey_hex = None
-
-            tried_keys = []
-
-            if field2:
-                ki = quantum_key.get_key_by_id(field2)
-                if ki:
-                    tried_keys.append((ki["key"], ki["iv"], "exact"))
-
-            for k in all_keys:
-                if field2 and k["key_id"] == field2:
-                    continue
-                tried_keys.append((k["key"], k["iv"], "rotator"))
-
-            if cur_key_bytes and (not tried_keys or tried_keys[-1][0] != cur_key_bytes):
-                tried_keys.append((cur_key_bytes, cur_iv_bytes, "fallback"))
-
-            for k_bytes, iv_bytes, usage in tried_keys:
-                decrypted_text, decrypt_error = decrypt_field(field1, k_bytes, iv_bytes)
-                if decrypted_text is not None:
-                    key_used = usage
-                    qkey_hex = k_bytes.hex()
-                    decrypt_error = None
-                    break
+            if key_bytes and field1:
+                decrypted_text = aes_decrypt(field1, key_bytes, iv_bytes)
+                decrypt_error = None if decrypted_text else "decrypt_failed"
+            else:
+                decrypted_text = None
+                decrypt_error = "no_key_available"
 
             out.append({
                 "entry_id": entry_id,
-                "created_at": f.get("created_at"),
                 "field1": field1,
-                "decrypted_text": decrypted_text,
-                "decrypt_error": decrypt_error,
                 "field2": field2,
-                "field3": field3,
-                "field4": field4,
-                "field5": field5,
                 "key_used": key_used,
-                "qkey_hex": qkey_hex
+                "decrypted_text": decrypted_text,
+                "decrypt_error": decrypt_error
             })
-
         return jsonify(out)
     except Exception as e:
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.route("/api/quantum_key", methods=["GET"])
+@app.route("/api/quantum_key")
 def api_quantum_key():
     auth = request.args.get("auth", "")
     key_id = request.args.get("key_id", "")
@@ -136,6 +101,5 @@ def static_files(path):
     return send_from_directory(FRONTEND_DIR, "index.html")
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    print(f"Starting server on 0.0.0.0:{port}")
+    port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port, debug=True)
