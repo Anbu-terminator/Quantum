@@ -1,15 +1,11 @@
-# server.py (updated)
+# server.py
 import os
 import time
 import json
-import base64
 import threading
-import hashlib
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
-from pymongo import MongoClient
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad, unpad
+import requests
 import quantum_key
 import config
 
@@ -19,124 +15,48 @@ FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
-# Database
-mongo = MongoClient(config.MONGODB_URI)
-db = mongo["q_sense_db"]
-stored_col = db["stored_ciphertexts"]
-processed_col = db["processed_entries"]
+# Start quantum key rotator (so ESP can still request keys)
+quantum_key.start_rotator(interval=getattr(config, "KEY_ROTATE_SECONDS", 60),
+                          keep=getattr(config, "KEEP_KEYS", 10))
 
-# Start quantum key rotator
-quantum_key.start_rotator()
-SERVER_AES_KEY = bytes.fromhex(config.SERVER_AES_KEY_HEX)
+# ThingSpeak feed URL (server-side uses read key; this hides the read key from browser)
+THINGSPEAK_FEEDS_URL = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=50"
 
-THINGSPEAK_FEEDS_URL = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=20"
-POLL_INTERVAL = 15  # seconds
-
-def derive_session_key_from_qkey_and_nonce(qkey_bytes: bytes, nonce_bytes: bytes) -> bytes:
-    """KDF: SHA256(qkey || nonce) -> first 16 bytes"""
-    h = hashlib.sha256(qkey_bytes + nonce_bytes).digest()
-    return h[:16]
-
-def poll_thingspeak_loop():
-    """Poll ThingSpeak, verify token, derive session key and attempt to decrypt each feed entry.
-       If decrypted OK, wrap original payload (includes qkey_hex!) with SERVER_AES_KEY and store.
+@app.route("/api/latest", methods=["GET"])
+def api_latest():
     """
-    import requests
-    while True:
-        try:
-            r = requests.get(THINGSPEAK_FEEDS_URL, timeout=10)
-            if r.status_code == 200:
-                feeds = r.json().get("feeds", [])
-                for feed in feeds:
-                    entry_id = feed.get("entry_id")
-                    if not entry_id:
-                        continue
-                    if processed_col.find_one({"entry_id": entry_id}):
-                        continue
+    Proxy latest feeds from ThingSpeak and return them as JSON.
+    We DO NOT decrypt here — the frontend will decrypt using the quantum key + nonce.
+    Returned structure: array of feed objects with entry_id, created_at, field1..field5
+    """
+    try:
+        r = requests.get(THINGSPEAK_FEEDS_URL, timeout=10)
+        if r.status_code != 200:
+            return jsonify({"error": "thingspeak_fetch_failed", "status": r.status_code}), 502
+        data = r.json()
+        feeds = data.get("feeds", [])
+        # Only return the useful fields; keep entire feed object if you want
+        out = []
+        for f in feeds:
+            out.append({
+                "entry_id": f.get("entry_id"),
+                "created_at": f.get("created_at"),
+                "field1": f.get("field1"),  # cipher_b64
+                "field2": f.get("field2"),  # key_id
+                "field3": f.get("field3"),  # iv_hex
+                "field4": f.get("field4"),  # token
+                "field5": f.get("field5")   # nonce_hex
+            })
+        return jsonify(out)
+    except Exception as e:
+        return jsonify({"error": "exception", "msg": str(e)}), 500
 
-                    cipher_b64 = feed.get("field1", "") or ""
-                    key_id = (feed.get("field2") or "").strip()
-                    iv_hex = (feed.get("field3") or "").strip()
-                    token = (feed.get("field4") or "").strip()
-                    nonce_hex = (feed.get("field5") or "").strip()
-
-                    # validate token
-                    if token != config.ESP_AUTH_TOKEN:
-                        processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "bad_token"})
-                        print("[poll] token mismatch", entry_id)
-                        continue
-
-                    # fields required
-                    if not cipher_b64 or not iv_hex or not nonce_hex:
-                        processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "missing_fields"})
-                        print("[poll] missing fields", entry_id)
-                        continue
-
-                    # find quantum key (requested key_id or current)
-                    qinfo = quantum_key.get_key_by_id(key_id) if key_id else None
-                    if not qinfo:
-                        cur = quantum_key.get_current_key()
-                        if cur:
-                            kid, qbytes, qiv = cur
-                            qinfo = {"key": qbytes, "iv": qiv, "key_id": kid}
-                        else:
-                            processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "no_key"})
-                            print("[poll] no quantum key available", entry_id)
-                            continue
-
-                    try:
-                        ct = base64.b64decode(cipher_b64)
-                        iv_bytes = bytes.fromhex(iv_hex)
-                        nonce_bytes = bytes.fromhex(nonce_hex)
-
-                        # derive session key and try to decrypt (this verifies the ESP used the right key/nonce)
-                        derived_key = derive_session_key_from_qkey_and_nonce(qinfo["key"], nonce_bytes)
-                        cipher = AES.new(derived_key, AES.MODE_CBC, iv_bytes)
-                        plaintext = unpad(cipher.decrypt(ct), AES.block_size)  # will raise if padding wrong
-
-                        # If decryption succeeded, prepare original payload with qkey_hex included.
-                        original_payload = {
-                            "cipher_b64": cipher_b64,
-                            "key_id": key_id or qinfo.get("key_id", ""),
-                            "iv": iv_hex,
-                            "nonce": nonce_hex,
-                            "qkey_hex": qinfo["key"].hex(),    # <-- include quantum key hex here (so frontend doesn't need to request it)
-                            "thingspeak_entry_id": entry_id,
-                            "received_at": feed.get("created_at")
-                        }
-                        original_json = json.dumps(original_payload).encode("utf-8")
-
-                        # server-wrap it using SERVER_AES_KEY (CBC + PKCS7) and store base64
-                        server_iv = os.urandom(16)
-                        scipher = AES.new(SERVER_AES_KEY, AES.MODE_CBC, server_iv)
-                        sct = scipher.encrypt(pad(original_json, AES.block_size))
-                        sct_b64 = base64.b64encode(sct).decode()
-
-                        doc = {
-                            "entry_id": entry_id,
-                            "server_cipher_b64": sct_b64,
-                            "server_iv_hex": server_iv.hex(),
-                            "stored_at": time.time()
-                        }
-                        stored_col.insert_one(doc)
-                        processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "ok"})
-                        print("[poll] processed", entry_id)
-                    except Exception as e:
-                        # decryption failed — record decrypt_error and continue
-                        print("[poll] decrypt error", entry_id, str(e))
-                        processed_col.insert_one({"entry_id": entry_id, "ts": time.time(), "note": "decrypt_error", "err": str(e)})
-            else:
-                print("[poll] thingspeak status", r.status_code)
-        except Exception as ex:
-            print("[poll] exception:", ex)
-        time.sleep(POLL_INTERVAL)
-
-# start poller
-threading.Thread(target=poll_thingspeak_loop, daemon=True).start()
-
-# ------------ API endpoints ------------
 @app.route("/api/quantum_key", methods=["GET"])
 def api_quantum_key():
+    """
+    Returns current quantum key or key by id.
+    Requires auth == ESP_AUTH_TOKEN (same as before).
+    """
     auth = request.args.get("auth", "")
     key_id = request.args.get("key_id", "")
     if auth != config.ESP_AUTH_TOKEN:
@@ -152,22 +72,16 @@ def api_quantum_key():
     kid, key_bytes, iv_bytes = cur
     return jsonify({"key_id": kid, "key": key_bytes.hex(), "iv": iv_bytes.hex()})
 
-@app.route("/api/latest", methods=["GET"])
-def api_latest():
-    limit = int(request.args.get("limit", "20"))
-    docs = list(stored_col.find({}, {"_id": 0}).sort("stored_at", -1).limit(limit))
-    return jsonify(docs)
-
 @app.route("/api/server_key", methods=["GET"])
 def api_server_key():
+    """
+    If you still need server AES key endpoint (used previously), we return it if auth matches.
+    Frontend does not strictly need it in this new design (we decrypt directly from ThingSpeak).
+    """
     auth = request.args.get("auth", "")
     if auth != config.ESP_AUTH_TOKEN:
         return jsonify({"error": "unauthorized"}), 401
-    return jsonify({"server_key": config.SERVER_AES_KEY_HEX})
-
-@app.route("/health", methods=["GET"])
-def health():
-    return jsonify({"status": "ok", "time": time.time()})
+    return jsonify({"server_key": getattr(config, "SERVER_AES_KEY_HEX", "")})
 
 @app.route("/")
 def index():
@@ -175,12 +89,12 @@ def index():
 
 @app.route("/<path:path>")
 def static_files(path):
-    file_path = os.path.join(FRONTEND_DIR, path)
-    if os.path.exists(file_path):
+    fp = os.path.join(FRONTEND_DIR, path)
+    if os.path.exists(fp):
         return send_from_directory(FRONTEND_DIR, path)
     return send_from_directory(FRONTEND_DIR, "index.html")
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"Starting server on 0.0.0.0:{port}, frontend dir={FRONTEND_DIR}")
+    print("Starting server on 0.0.0.0:%d" % port)
     app.run(host="0.0.0.0", port=port, debug=True)
