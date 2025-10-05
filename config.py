@@ -21,12 +21,8 @@ KEY_ROTATE_SECONDS = 60     # Rotate every 60 seconds
 KEEP_KEYS = 10              # Keep last 10 valid keys
 
 # === AES CONFIG ===
-# 16 bytes (32 hex chars) key for optional server-side re-encryption or debugging
 SERVER_AES_KEY_HEX = "00112233445566778899aabbccddeeff"
 
 # === Behavior Flags ===
-# If True, decrypts data directly from ThingSpeak (frontend performs decryption)
 DECRYPT_FROM_THINGSPEAK = True
-
-# If True, stores only quantum keys and metadata in MongoDB, not encrypted feeds
 STORE_ONLY_KEYS = True
