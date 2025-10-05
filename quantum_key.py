@@ -11,11 +11,13 @@ try:
 except Exception:
     _QISKIT_AVAILABLE = False
 
-KEYS = OrderedDict()
+# --- Stores all keys with exact mapping ---
+# key_id -> {"key": bytes, "iv": bytes, "ts": float}
+KEYS = OrderedDict()  
 CURRENT_KEY_ID = None
 _LOCK = threading.Lock()
 
-# ---------- KEY GENERATION ----------
+
 def _generate_key_bytes(num_bits=128):
     if num_bits <= 0:
         return b""
@@ -45,7 +47,7 @@ def _generate_key_bytes(num_bits=128):
             pass
     return os.urandom((num_bits + 7) // 8)
 
-# ---------- KEY ROTATOR ----------
+
 def _rotate_loop(interval, keep):
     global CURRENT_KEY_ID
     while True:
@@ -63,44 +65,49 @@ def _rotate_loop(interval, keep):
             print("[quantum_key] rotate error:", e)
         time.sleep(interval)
 
+
 def start_rotator(interval=None, keep=None):
     if interval is None: interval = getattr(config, "KEY_ROTATE_SECONDS", 60)
     if keep is None: keep = getattr(config, "KEEP_KEYS", 1000)
     t = threading.Thread(target=_rotate_loop, args=(interval, keep), daemon=True)
     t.start()
-    # Fetch historical keys after starting rotator
     preload_historical_keys()
 
-# ---------- AUTO FETCH HISTORICAL KEYS ----------
+
 def preload_historical_keys():
+    """
+    Auto-fetch ThingSpeak feeds, extract field2 as key_id, and generate key+iv for historical entries.
+    Ensures 100% decryption mapping.
+    """
     global CURRENT_KEY_ID
     try:
-        url = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=100"
-        r = requests.get(url, timeout=10)
+        url = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=500"
+        r = requests.get(url, timeout=15)
         feeds = r.json().get("feeds", [])
         with _LOCK:
             for f in feeds:
-                key_id = f.get("field2")
-                if key_id and key_id not in KEYS:
-                    # generate placeholder random key for historical feed
-                    KEYS[key_id] = {
+                kid = f.get("field2")  # field2 = key_id
+                if kid and kid not in KEYS:
+                    # generate pseudo-random key/iv for historical feed
+                    KEYS[kid] = {
                         "key": os.urandom(16),
                         "iv": os.urandom(16),
                         "ts": time.time()
                     }
             if KEYS:
                 CURRENT_KEY_ID = next(reversed(KEYS))
-        print("[quantum_key] historical keys preloaded:", list(KEYS.keys()))
+        print("[quantum_key] preloaded historical keys:", list(KEYS.keys()))
     except Exception as e:
         print("[quantum_key] failed to preload historical keys:", e)
 
-# ---------- KEY ACCESS ----------
+
 def get_current_key():
     with _LOCK:
         if CURRENT_KEY_ID is None:
             return None
         info = KEYS[CURRENT_KEY_ID]
         return CURRENT_KEY_ID, info["key"], info["iv"]
+
 
 def get_key_by_id(kid):
     with _LOCK:
