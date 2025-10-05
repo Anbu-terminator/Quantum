@@ -17,33 +17,33 @@
     <section class="token-input">
       <h2>Enter Token</h2>
       <input type="text" id="token" placeholder="Paste ESP_AUTH_TOKEN" style="width: 320px;" />
-      <button id="btnFetch">Fetch Latest</button>
+      <button id="btnFetch">Fetch Latest (from ThingSpeak)</button>
       <span id="status"></span>
     </section>
 
     <section class="history">
-      <h2>📜 Latest Records</h2>
+      <h2>📜 Latest Records (decrypted client-side)</h2>
       <table id="data-table">
         <thead>
           <tr>
             <th>Entry ID</th>
-            <th>Stored At</th>
+            <th>Created At</th>
             <th>Temperature (°C)</th>
             <th>Humidity (%)</th>
             <th>IR</th>
-            <th>Error</th>
+            <th>Status / Error</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
 
       <h3>Debug / Raw</h3>
-      <pre id="out" style="max-height:220px; overflow:auto; background: rgba(0,0,0,0.35); padding:10px; border-radius:6px;"></pre>
+      <pre id="out" style="max-height:260px; overflow:auto; background: rgba(0,0,0,0.35); padding:10px; border-radius:6px;"></pre>
     </section>
   </main>
 
   <footer>
-    <p>⚡ Powered by Quantum Randomness + AES + IoT | Q-SENSE 2025</p>
+    <p>⚡ Powered by Quantum Randomness + AES | Q-SENSE</p>
   </footer>
 
   <script src="script.js"></script>
