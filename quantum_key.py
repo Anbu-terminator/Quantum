@@ -81,3 +81,10 @@ def get_current_key():
 def get_key_by_id(kid):
     with _LOCK:
         return KEYS.get(kid)
+
+# quantum_key.py (add at the bottom)
+def get_all_keys():
+    """Return a list of all keys in the rotator"""
+    with _LOCK:
+        return [{"key_id": kid, "key": info["key"], "iv": info["iv"]} for kid, info in KEYS.items()]
+
