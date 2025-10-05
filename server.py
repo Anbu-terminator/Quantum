@@ -1,8 +1,9 @@
 # server.py
-import os, time, json
+import os, json, base64
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 import requests
+from Crypto.Cipher import AES
 import quantum_key
 import config
 
@@ -15,16 +16,30 @@ CORS(app)
 # Start rotator using config values
 quantum_key.start_rotator()
 
-THINGSPEAK_FEEDS_URL = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=20"
+THINGSPEAK_FEEDS_URL = (
+    f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json"
+    f"?api_key={config.THINGSPEAK_READ_KEY}&results=20"
+)
+
+def decrypt_field(cipher_b64, key_bytes, iv_bytes):
+    """Decrypt Base64 AES-CTR ciphertext with given key & IV"""
+    if not cipher_b64 or not key_bytes or not iv_bytes:
+        return None, "no_data_or_key"
+    try:
+        cipher_bytes = base64.b64decode(cipher_b64)
+        cipher = AES.new(key_bytes, AES.MODE_CTR, nonce=iv_bytes)
+        decrypted_bytes = cipher.decrypt(cipher_bytes)
+        try:
+            decrypted_text = decrypted_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            decrypted_text = None
+            return None, "malformed_utf8"
+        return decrypted_text, None
+    except Exception:
+        return None, "decrypt_failed"
 
 @app.route("/api/latest", methods=["GET"])
 def api_latest():
-    """
-    Proxy latest ThingSpeak feeds (20). For every feed:
-      - try exact key_id (field2) in the rotator store
-      - if not found, use current active key as fallback
-      - return qkey_hex and key_used ("exact" or "fallback" or None)
-    """
     try:
         r = requests.get(THINGSPEAK_FEEDS_URL, timeout=12)
         if r.status_code != 200:
@@ -36,54 +51,72 @@ def api_latest():
         # get current key once for fallback
         cur = quantum_key.get_current_key()
         cur_kid = None
-        cur_key_hex = None
+        cur_key_bytes = None
+        cur_iv_bytes = None
         if cur:
-            cur_kid, cur_key_bytes, _ = cur
-            cur_key_hex = cur_key_bytes.hex()
+            cur_kid, cur_key_bytes, cur_iv_bytes = cur
+
+        # get all keys in rotator for trial
+        all_keys = quantum_key.get_all_keys()  # returns list of dicts: [{"key_id":..., "key":..., "iv":...}, ...]
 
         out = []
         for f in feeds:
             entry_id = f.get("entry_id")
             field1 = f.get("field1")  # ciphertext b64
             field2 = (f.get("field2") or "").strip()  # key_id
-            field3 = (f.get("field3") or "").strip()  # iv_hex
-            field4 = (f.get("field4") or "").strip()  # token
-            field5 = (f.get("field5") or "").strip()  # nonce_hex
+            field3 = (f.get("field3") or "").strip()
+            field4 = (f.get("field4") or "").strip()
+            field5 = (f.get("field5") or "").strip()
 
             qkey_hex = None
             key_used = None
-            # 1) try exact key by id
+            decrypted_text = None
+            decrypt_error = None
+
+            tried_keys = []
+
+            # 1) Try exact key if field2 provided
             if field2:
                 ki = quantum_key.get_key_by_id(field2)
                 if ki:
-                    qkey_hex = ki["key"].hex()
-                    key_used = "exact"
+                    tried_keys.append((ki["key"], ki["iv"], "exact"))
                 else:
-                    # 2) fallback to current active key (if available)
-                    if cur_key_hex:
-                        qkey_hex = cur_key_hex
-                        key_used = "fallback"
-                    else:
-                        key_used = None
-            else:
-                # no key_id in feed -> use current if available
-                if cur_key_hex:
-                    qkey_hex = cur_key_hex
-                    key_used = "fallback"
-                else:
-                    key_used = None
+                    # if exact key not found, we'll try all keys later
+                    pass
+
+            # 2) Add all keys from rotator (avoid duplicates)
+            for k in all_keys:
+                if field2 and k["key_id"] == field2:
+                    continue  # already tried exact key
+                tried_keys.append((k["key"], k["iv"], "rotator"))
+
+            # 3) Add current key as fallback if not already tried
+            if cur_key_bytes and (not tried_keys or tried_keys[-1][0] != cur_key_bytes):
+                tried_keys.append((cur_key_bytes, cur_iv_bytes, "fallback"))
+
+            # Try decryption sequentially
+            for k_bytes, iv_bytes, usage in tried_keys:
+                decrypted_text, decrypt_error = decrypt_field(field1, k_bytes, iv_bytes)
+                if decrypted_text is not None:
+                    key_used = usage
+                    qkey_hex = k_bytes.hex()
+                    decrypt_error = None
+                    break
 
             out.append({
                 "entry_id": entry_id,
                 "created_at": f.get("created_at"),
                 "field1": field1,
+                "decrypted_text": decrypted_text,
+                "decrypt_error": decrypt_error,
                 "field2": field2,
                 "field3": field3,
                 "field4": field4,
                 "field5": field5,
-                "key_used": key_used,    # "exact", "fallback", or null
+                "key_used": key_used,
                 "qkey_hex": qkey_hex
             })
+
         return jsonify(out)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
