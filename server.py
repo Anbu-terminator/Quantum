@@ -12,7 +12,7 @@ FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
-# Start rotator (uses config)
+# Start rotator using config values
 quantum_key.start_rotator()
 
 THINGSPEAK_FEEDS_URL = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=20"
@@ -20,34 +20,58 @@ THINGSPEAK_FEEDS_URL = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_C
 @app.route("/api/latest", methods=["GET"])
 def api_latest():
     """
-    Proxy and attach qkey_hex and key_found flag.
-    If the exact key_id in the ThingSpeak feed exists in server store, include qkey_hex and key_found=True.
-    Otherwise set key_found=False (so frontend won't attempt wrong decrypt).
+    Proxy latest ThingSpeak feeds (20). For every feed:
+      - try exact key_id (field2) in the rotator store
+      - if not found, use current active key as fallback
+      - return qkey_hex and key_used ("exact" or "fallback" or None)
     """
     try:
-        r = requests.get(THINGSPEAK_FEEDS_URL, timeout=10)
+        r = requests.get(THINGSPEAK_FEEDS_URL, timeout=12)
         if r.status_code != 200:
             return jsonify({"error": "thingspeak_fetch_failed", "status": r.status_code}), 502
 
         data = r.json()
         feeds = data.get("feeds", []) or []
+
+        # get current key once for fallback
+        cur = quantum_key.get_current_key()
+        cur_kid = None
+        cur_key_hex = None
+        if cur:
+            cur_kid, cur_key_bytes, _ = cur
+            cur_key_hex = cur_key_bytes.hex()
+
         out = []
-        # Do not fallback to current key automatically here — only include exact key if present.
         for f in feeds:
             entry_id = f.get("entry_id")
-            field1 = f.get("field1")  # ciphertext base64
+            field1 = f.get("field1")  # ciphertext b64
             field2 = (f.get("field2") or "").strip()  # key_id
             field3 = (f.get("field3") or "").strip()  # iv_hex
             field4 = (f.get("field4") or "").strip()  # token
             field5 = (f.get("field5") or "").strip()  # nonce_hex
 
-            key_found = False
             qkey_hex = None
+            key_used = None
+            # 1) try exact key by id
             if field2:
                 ki = quantum_key.get_key_by_id(field2)
                 if ki:
                     qkey_hex = ki["key"].hex()
-                    key_found = True
+                    key_used = "exact"
+                else:
+                    # 2) fallback to current active key (if available)
+                    if cur_key_hex:
+                        qkey_hex = cur_key_hex
+                        key_used = "fallback"
+                    else:
+                        key_used = None
+            else:
+                # no key_id in feed -> use current if available
+                if cur_key_hex:
+                    qkey_hex = cur_key_hex
+                    key_used = "fallback"
+                else:
+                    key_used = None
 
             out.append({
                 "entry_id": entry_id,
@@ -57,7 +81,7 @@ def api_latest():
                 "field3": field3,
                 "field4": field4,
                 "field5": field5,
-                "key_found": key_found,
+                "key_used": key_used,    # "exact", "fallback", or null
                 "qkey_hex": qkey_hex
             })
         return jsonify(out)
