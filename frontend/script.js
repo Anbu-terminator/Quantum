@@ -1,67 +1,58 @@
-// script.js (final fix)
+// script.js - decrypt directly from ThingSpeak entries (client-side)
 const API_BASE = window.location.origin;
 
 function hexToWordArray(hex) { return CryptoJS.enc.Hex.parse(hex); }
 function base64ToWordArray(b64) { return CryptoJS.enc.Base64.parse(b64); }
 
-async function fetchLatest() {
-  const r = await fetch(`${API_BASE}/api/latest?limit=20`);
-  if (!r.ok) throw new Error("latest fetch failed: " + r.status);
+// fetch ThingSpeak entries via server proxy
+async function fetchLatestFeeds() {
+  const r = await fetch(`${API_BASE}/api/latest`);
+  if (!r.ok) throw new Error("Fetch latest failed: " + r.status);
   return r.json();
 }
 
-async function fetchServerKey(token) {
-  const r = await fetch(`${API_BASE}/api/server_key?auth=${encodeURIComponent(token)}`);
-  if (!r.ok) {
-    const txt = await r.text().catch(()=>"");
-    throw new Error("Server key fetch failed: " + r.status + " " + txt);
-  }
-  return r.json();
+async function fetchQuantumKey(token, key_id = "") {
+  // if key_id provided, request that key, otherwise get current
+  const url = `${API_BASE}/api/quantum_key?auth=${encodeURIComponent(token)}${key_id ? "&key_id="+encodeURIComponent(key_id):""}`;
+  const r = await fetch(url);
+  const text = await r.text();
+  if (!r.ok) throw new Error("Quantum key fetch failed: " + r.status + " " + text);
+  return JSON.parse(text);
 }
 
-function decryptServerAES_base64(server_cipher_b64, server_key_hex, server_iv_hex) {
-  const keyWA = hexToWordArray(server_key_hex);
-  const ivWA = hexToWordArray(server_iv_hex);
-  const cipherWA = base64ToWordArray(server_cipher_b64);
-  const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
-  const decryptedWA = CryptoJS.AES.decrypt(cipherParams, keyWA, { iv: ivWA, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-  if (!decryptedWA || decryptedWA.sigBytes === 0) throw new Error("Server unwrap invalid");
-  const txt = decryptedWA.toString(CryptoJS.enc.Utf8);
-  if (!txt) throw new Error("Server unwrap non-UTF8");
-  return txt;
-}
-
+// derive session key hex (first 16 bytes = 32 hex chars)
 function deriveSessionKeyHex(qkey_hex, nonce_hex) {
+  // qkey_hex and nonce_hex are hex strings representing raw bytes
   const concatWA = CryptoJS.enc.Hex.parse(qkey_hex + nonce_hex);
-  const hashHex = CryptoJS.SHA256(concatWA).toString(CryptoJS.enc.Hex);
-  return hashHex.substring(0, 32);
+  const sha = CryptoJS.SHA256(concatWA).toString(CryptoJS.enc.Hex);
+  return sha.substring(0, 32);
 }
 
-function decryptOriginalWithDerivedKey_base64(orig_cipher_b64, derived_key_hex, iv_hex) {
-  const keyWA = hexToWordArray(derived_key_hex);
+function decryptAESBase64WithHexKey(cipher_b64, key_hex, iv_hex) {
+  const keyWA = hexToWordArray(key_hex);
   const ivWA = hexToWordArray(iv_hex);
-  const cipherWA = base64ToWordArray(orig_cipher_b64);
+  const cipherWA = base64ToWordArray(cipher_b64);
   const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
   const decryptedWA = CryptoJS.AES.decrypt(cipherParams, keyWA, { iv: ivWA, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-  if (!decryptedWA || decryptedWA.sigBytes === 0) throw new Error("Original unwrap invalid");
+  if (!decryptedWA || decryptedWA.sigBytes === 0) throw new Error("Decryption failed or produced zero bytes");
   const txt = decryptedWA.toString(CryptoJS.enc.Utf8);
-  if (!txt) throw new Error("Original unwrap non-UTF8");
+  if (!txt) throw new Error("Decoded plaintext is empty or not valid UTF-8");
   return txt;
 }
 
-function renderTable(results) {
+function renderTable(items) {
   const tbody = document.querySelector("#data-table tbody");
   tbody.innerHTML = "";
-  for (const item of results) {
+  for (const it of items) {
     const tr = document.createElement("tr");
-    const sensor = item.sensor_data || {};
+    const s = it.sensor || {};
     tr.innerHTML = `
-      <td>${item.entry_id}</td>
-      <td>${item.stored_at || "-"}</td>
-      <td>${sensor.temperature !== undefined ? Number(sensor.temperature).toFixed(2) : "-"}</td>
-      <td>${sensor.humidity !== undefined ? Number(sensor.humidity).toFixed(2) : "-"}</td>
-      <td>${sensor.ir !== undefined ? sensor.ir : "-"}</td>
-      <td>${item.error ? item.error : "-"}</td>
+      <td>${it.entry_id}</td>
+      <td>${it.created_at || "-"}</td>
+      <td>${s.temperature !== undefined ? Number(s.temperature).toFixed(2) : "-"}</td>
+      <td>${s.humidity !== undefined ? Number(s.humidity).toFixed(2) : "-"}</td>
+      <td>${s.ir !== undefined ? s.ir : "-"}</td>
+      <td>${it.status || "-"}</td>
     `;
     tbody.appendChild(tr);
   }
@@ -71,57 +62,73 @@ document.getElementById('btnFetch').addEventListener('click', async () => {
   const token = document.getElementById('token').value.trim();
   const statusEl = document.getElementById('status');
   const outEl = document.getElementById('out');
-  if (!token) { alert('Paste ESP_AUTH_TOKEN'); return; }
+  if (!token) { alert("Paste ESP_AUTH_TOKEN"); return; }
 
-  statusEl.textContent = "Fetching latest...";
+  statusEl.textContent = "Fetching ThingSpeak...";
   outEl.textContent = "";
 
   try {
-    const docs = await fetchLatest();
-    if (!docs || docs.length === 0) {
-      statusEl.textContent = "No stored items yet.";
-      renderTable([]);
-      return;
-    }
-
-    const serverKeyResp = await fetchServerKey(token);
-    const serverKeyHex = serverKeyResp.server_key;
-
+    const feeds = await fetchLatestFeeds();
     const results = [];
-    for (const item of docs) {
+
+    for (const f of feeds) {
+      // skip empty rows
+      if (!f.entry_id) continue;
+
+      // quick validation: token should match (the ESP included token in field4)
+      if ((f.field4 || "").trim() !== token) {
+        results.push({ entry_id: f.entry_id, status: "bad_token" });
+        continue;
+      }
+
+      const cipher_b64 = (f.field1 || "").trim();
+      const key_id = (f.field2 || "").trim();
+      const iv_hex = (f.field3 || "").trim();
+      const nonce_hex = (f.field5 || "").trim();
+
+      if (!cipher_b64 || !iv_hex || !nonce_hex) {
+        results.push({ entry_id: f.entry_id, status: "missing_fields" });
+        continue;
+      }
+
       try {
-        // 1) unwrap server AES
-        const serverPlain = decryptServerAES_base64(item.server_cipher_b64, serverKeyHex, item.server_iv_hex);
-        const obj = JSON.parse(serverPlain);
-
-        // 2) require qkey_hex (always present in new records)
-        const qkey_hex = obj.qkey_hex;
-        if (!qkey_hex) {
-          throw new Error("Old record: missing qkey_hex (cannot decrypt)");
+        // fetch quantum key (by id if provided; else get current)
+        let qresp;
+        try {
+          qresp = await fetchQuantumKey(token, key_id || "");
+        } catch (e) {
+          // If key_id was requested and server returns 404, try getting current key as fallback
+          if (key_id) {
+            qresp = await fetchQuantumKey(token, ""); // try current
+          } else {
+            throw e;
+          }
         }
+        // qresp.key is hex string
+        const qkey_hex = qresp.key;
+        if (!qkey_hex) throw new Error("quantum key missing in response");
 
-        if (!obj.nonce) throw new Error("missing nonce");
-
-        // 3) derive session key and decrypt original
-        const derived_hex = deriveSessionKeyHex(qkey_hex, obj.nonce);
-        const finalPlain = decryptOriginalWithDerivedKey_base64(obj.cipher_b64, derived_hex, obj.iv);
+        // derive session key and decrypt
+        const derived_hex = deriveSessionKeyHex(qkey_hex, nonce_hex);
+        const plain = decryptAESBase64WithHexKey(cipher_b64, derived_hex, iv_hex);
+        const sensor = JSON.parse(plain);
 
         results.push({
-          entry_id: item.entry_id,
-          stored_at: new Date(item.stored_at * 1000).toLocaleString(),
-          sensor_data: JSON.parse(finalPlain)
+          entry_id: f.entry_id,
+          created_at: f.created_at,
+          sensor,
+          status: "ok"
         });
-      } catch (e) {
-        results.push({ entry_id: item.entry_id, error: "Error: " + (e.message || String(e)) });
+      } catch (err) {
+        results.push({ entry_id: f.entry_id, status: "decrypt_error: " + (err && err.message ? err.message : String(err)) });
       }
     }
 
     renderTable(results);
-    statusEl.textContent = `Fetched ${results.length} records.`;
+    statusEl.textContent = `Fetched ${results.length} feeds`;
     outEl.textContent = JSON.stringify(results, null, 2);
   } catch (err) {
     statusEl.textContent = "Error: " + err;
     outEl.textContent = String(err);
-    renderTable([]);
   }
 });
