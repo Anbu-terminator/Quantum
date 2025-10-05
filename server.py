@@ -15,6 +15,7 @@ CORS(app)
 
 quantum_key.start_rotator()
 
+
 def aes_decrypt(ciphertext_b64, key_bytes, iv_bytes):
     try:
         cipher = AES.new(key_bytes, AES.MODE_CBC, iv_bytes)
@@ -25,20 +26,26 @@ def aes_decrypt(ciphertext_b64, key_bytes, iv_bytes):
     except Exception:
         return None
 
+
 @app.route("/api/latest")
 def api_latest():
+    """
+    Fetches latest ThingSpeak feeds and decrypts using exact key mapping
+    """
     try:
         url = f"http://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?api_key={config.THINGSPEAK_READ_KEY}&results=50"
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, timeout=15)
         feeds = r.json().get("feeds", [])
         cur = quantum_key.get_current_key()
         cur_kid, cur_key_bytes, cur_iv = (cur or (None, None, None))
         out = []
+
         for f in feeds:
             entry_id = f.get("entry_id")
             field1 = f.get("field1")
-            field2 = f.get("field2")
+            field2 = f.get("field2")  # key_id
             ki = quantum_key.get_key_by_id(field2)
+
             if ki:
                 key_bytes = ki["key"]
                 iv_bytes = ki["iv"]
@@ -67,10 +74,13 @@ def api_latest():
                 "decrypted_text": decrypted_text,
                 "decrypt_error": decrypt_error
             })
+
         return jsonify(out)
+
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/quantum_key")
 def api_quantum_key():
@@ -89,9 +99,11 @@ def api_quantum_key():
     kid, key_bytes, iv_bytes = cur
     return jsonify({"key_id": kid, "key": key_bytes.hex(), "iv": iv_bytes.hex()})
 
+
 @app.route("/")
 def index():
     return send_from_directory(FRONTEND_DIR, "index.html")
+
 
 @app.route("/<path:path>")
 def static_files(path):
@@ -99,6 +111,7 @@ def static_files(path):
     if os.path.exists(fp):
         return send_from_directory(FRONTEND_DIR, path)
     return send_from_directory(FRONTEND_DIR, "index.html")
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
