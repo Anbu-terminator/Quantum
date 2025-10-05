@@ -17,7 +17,6 @@ _LOCK = threading.Lock()
 def _generate_key_bytes(num_bits=128):
     if num_bits <= 0:
         return b""
-    # prefer quantum if available
     if _QISKIT_AVAILABLE:
         try:
             max_qubits = 25
@@ -68,6 +67,17 @@ def start_rotator(interval=None, keep=None):
     import config
     if interval is None: interval = getattr(config, "KEY_ROTATE_SECONDS", 60)
     if keep is None: keep = getattr(config, "KEEP_KEYS", 1000)
+
+    # Immediately create first key so API has at least one key
+    key_bytes = _generate_key_bytes(128)[:16]
+    iv = os.urandom(16)
+    kid = str(int(time.time()))
+    with _LOCK:
+        KEYS[kid] = {"key": key_bytes, "iv": iv, "ts": time.time()}
+        global CURRENT_KEY_ID
+        CURRENT_KEY_ID = kid
+    print("[quantum_key] initial key_id:", kid)
+
     t = threading.Thread(target=_rotate_loop, args=(interval, keep), daemon=True)
     t.start()
 
@@ -82,9 +92,7 @@ def get_key_by_id(kid):
     with _LOCK:
         return KEYS.get(kid)
 
-# quantum_key.py (add at the bottom)
 def get_all_keys():
     """Return a list of all keys in the rotator"""
     with _LOCK:
         return [{"key_id": kid, "key": info["key"], "iv": info["iv"]} for kid, info in KEYS.items()]
-
