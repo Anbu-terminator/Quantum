@@ -1,31 +1,22 @@
-// script.js - decrypt directly from ThingSpeak entries (client-side)
+// script.js - decrypt directly using server-provided qkey_hex
 const API_BASE = window.location.origin;
 
 function hexToWordArray(hex) { return CryptoJS.enc.Hex.parse(hex); }
 function base64ToWordArray(b64) { return CryptoJS.enc.Base64.parse(b64); }
 
-// fetch ThingSpeak entries via server proxy
+// fetch latest 20 proxied feeds from server
 async function fetchLatestFeeds() {
   const r = await fetch(`${API_BASE}/api/latest`);
   if (!r.ok) throw new Error("Fetch latest failed: " + r.status);
   return r.json();
 }
 
-async function fetchQuantumKey(token, key_id = "") {
-  // if key_id provided, request that key, otherwise get current
-  const url = `${API_BASE}/api/quantum_key?auth=${encodeURIComponent(token)}${key_id ? "&key_id="+encodeURIComponent(key_id):""}`;
-  const r = await fetch(url);
-  const text = await r.text();
-  if (!r.ok) throw new Error("Quantum key fetch failed: " + r.status + " " + text);
-  return JSON.parse(text);
-}
-
-// derive session key hex (first 16 bytes = 32 hex chars)
+// derive session key hex (first 16 bytes)
 function deriveSessionKeyHex(qkey_hex, nonce_hex) {
-  // qkey_hex and nonce_hex are hex strings representing raw bytes
+  // both qkey_hex and nonce_hex are plain hex strings (no 0x)
   const concatWA = CryptoJS.enc.Hex.parse(qkey_hex + nonce_hex);
-  const sha = CryptoJS.SHA256(concatWA).toString(CryptoJS.enc.Hex);
-  return sha.substring(0, 32);
+  const fullHashHex = CryptoJS.SHA256(concatWA).toString(CryptoJS.enc.Hex);
+  return fullHashHex.substring(0, 32); // 16 bytes = 32 hex chars
 }
 
 function decryptAESBase64WithHexKey(cipher_b64, key_hex, iv_hex) {
@@ -34,9 +25,9 @@ function decryptAESBase64WithHexKey(cipher_b64, key_hex, iv_hex) {
   const cipherWA = base64ToWordArray(cipher_b64);
   const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
   const decryptedWA = CryptoJS.AES.decrypt(cipherParams, keyWA, { iv: ivWA, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-  if (!decryptedWA || decryptedWA.sigBytes === 0) throw new Error("Decryption failed or produced zero bytes");
+  if (!decryptedWA || decryptedWA.sigBytes === 0) throw new Error("Decryption produced no bytes");
   const txt = decryptedWA.toString(CryptoJS.enc.Utf8);
-  if (!txt) throw new Error("Decoded plaintext is empty or not valid UTF-8");
+  if (!txt) throw new Error("Decrypted text is empty or not valid UTF-8");
   return txt;
 }
 
@@ -64,7 +55,7 @@ document.getElementById('btnFetch').addEventListener('click', async () => {
   const outEl = document.getElementById('out');
   if (!token) { alert("Paste ESP_AUTH_TOKEN"); return; }
 
-  statusEl.textContent = "Fetching ThingSpeak...";
+  statusEl.textContent = "Fetching latest 20 feeds...";
   outEl.textContent = "";
 
   try {
@@ -72,10 +63,9 @@ document.getElementById('btnFetch').addEventListener('click', async () => {
     const results = [];
 
     for (const f of feeds) {
-      // skip empty rows
       if (!f.entry_id) continue;
 
-      // quick validation: token should match (the ESP included token in field4)
+      // verify ESP token included in field4
       if ((f.field4 || "").trim() !== token) {
         results.push({ entry_id: f.entry_id, status: "bad_token" });
         continue;
@@ -85,29 +75,20 @@ document.getElementById('btnFetch').addEventListener('click', async () => {
       const key_id = (f.field2 || "").trim();
       const iv_hex = (f.field3 || "").trim();
       const nonce_hex = (f.field5 || "").trim();
+      const qkey_hex = (f.qkey_hex || "").trim(); // provided by server
 
       if (!cipher_b64 || !iv_hex || !nonce_hex) {
         results.push({ entry_id: f.entry_id, status: "missing_fields" });
         continue;
       }
 
-      try {
-        // fetch quantum key (by id if provided; else get current)
-        let qresp;
-        try {
-          qresp = await fetchQuantumKey(token, key_id || "");
-        } catch (e) {
-          // If key_id was requested and server returns 404, try getting current key as fallback
-          if (key_id) {
-            qresp = await fetchQuantumKey(token, ""); // try current
-          } else {
-            throw e;
-          }
-        }
-        // qresp.key is hex string
-        const qkey_hex = qresp.key;
-        if (!qkey_hex) throw new Error("quantum key missing in response");
+      if (!qkey_hex) {
+        // no key available (very old feed) — cannot decrypt safely
+        results.push({ entry_id: f.entry_id, status: "no_qkey_available" });
+        continue;
+      }
 
+      try {
         // derive session key and decrypt
         const derived_hex = deriveSessionKeyHex(qkey_hex, nonce_hex);
         const plain = decryptAESBase64WithHexKey(cipher_b64, derived_hex, iv_hex);
@@ -117,7 +98,8 @@ document.getElementById('btnFetch').addEventListener('click', async () => {
           entry_id: f.entry_id,
           created_at: f.created_at,
           sensor,
-          status: "ok"
+          status: "ok",
+          used_key_id: f.qkey_used_id || key_id
         });
       } catch (err) {
         results.push({ entry_id: f.entry_id, status: "decrypt_error: " + (err && err.message ? err.message : String(err)) });
@@ -125,7 +107,7 @@ document.getElementById('btnFetch').addEventListener('click', async () => {
     }
 
     renderTable(results);
-    statusEl.textContent = `Fetched ${results.length} feeds`;
+    statusEl.textContent = `Fetched ${results.length} items`;
     outEl.textContent = JSON.stringify(results, null, 2);
   } catch (err) {
     statusEl.textContent = "Error: " + err;
