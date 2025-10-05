@@ -13,7 +13,7 @@ FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 app = Flask(__name__, static_folder=FRONTEND_DIR, static_url_path="")
 CORS(app)
 
-# Start rotator using config values
+# Start rotator
 quantum_key.start_rotator()
 
 THINGSPEAK_FEEDS_URL = (
@@ -22,7 +22,6 @@ THINGSPEAK_FEEDS_URL = (
 )
 
 def decrypt_field(cipher_b64, key_bytes, iv_bytes):
-    """Decrypt Base64 AES-CTR ciphertext with given key & IV"""
     if not cipher_b64 or not key_bytes or not iv_bytes:
         return None, "no_data_or_key"
     try:
@@ -30,10 +29,9 @@ def decrypt_field(cipher_b64, key_bytes, iv_bytes):
         cipher = AES.new(key_bytes, AES.MODE_CTR, nonce=iv_bytes)
         decrypted_bytes = cipher.decrypt(cipher_bytes)
         try:
-            decrypted_text = decrypted_bytes.decode("utf-8")
+            return decrypted_bytes.decode("utf-8"), None
         except UnicodeDecodeError:
             return None, "malformed_utf8"
-        return decrypted_text, None
     except Exception:
         return None, "decrypt_failed"
 
@@ -47,13 +45,11 @@ def api_latest():
         data = r.json()
         feeds = data.get("feeds", []) or []
 
-        # current key for fallback
         cur = quantum_key.get_current_key()
         cur_kid = cur_key_bytes = cur_iv_bytes = None
         if cur:
             cur_kid, cur_key_bytes, cur_iv_bytes = cur
 
-        # all keys in rotator
         all_keys = quantum_key.get_all_keys()
 
         out = []
@@ -70,26 +66,21 @@ def api_latest():
             key_used = None
             qkey_hex = None
 
-            # build key attempt list
             tried_keys = []
 
-            # exact key from field2
             if field2:
                 ki = quantum_key.get_key_by_id(field2)
                 if ki:
                     tried_keys.append((ki["key"], ki["iv"], "exact"))
 
-            # add all rotator keys except exact
             for k in all_keys:
                 if field2 and k["key_id"] == field2:
                     continue
                 tried_keys.append((k["key"], k["iv"], "rotator"))
 
-            # add current key fallback
             if cur_key_bytes and (not tried_keys or tried_keys[-1][0] != cur_key_bytes):
                 tried_keys.append((cur_key_bytes, cur_iv_bytes, "fallback"))
 
-            # attempt decryption sequentially
             for k_bytes, iv_bytes, usage in tried_keys:
                 decrypted_text, decrypt_error = decrypt_field(field1, k_bytes, iv_bytes)
                 if decrypted_text is not None:
@@ -145,6 +136,6 @@ def static_files(path):
     return send_from_directory(FRONTEND_DIR, "index.html")
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # use Render's port
+    port = int(os.environ.get("PORT", 5000))
     print(f"Starting server on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=True)
