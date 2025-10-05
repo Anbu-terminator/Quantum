@@ -32,7 +32,6 @@ def decrypt_field(cipher_b64, key_bytes, iv_bytes):
         try:
             decrypted_text = decrypted_bytes.decode("utf-8")
         except UnicodeDecodeError:
-            decrypted_text = None
             return None, "malformed_utf8"
         return decrypted_text, None
     except Exception:
@@ -48,53 +47,49 @@ def api_latest():
         data = r.json()
         feeds = data.get("feeds", []) or []
 
-        # get current key once for fallback
+        # current key for fallback
         cur = quantum_key.get_current_key()
-        cur_kid = None
-        cur_key_bytes = None
-        cur_iv_bytes = None
+        cur_kid = cur_key_bytes = cur_iv_bytes = None
         if cur:
             cur_kid, cur_key_bytes, cur_iv_bytes = cur
 
-        # get all keys in rotator for trial
-        all_keys = quantum_key.get_all_keys()  # returns list of dicts: [{"key_id":..., "key":..., "iv":...}, ...]
+        # all keys in rotator
+        all_keys = quantum_key.get_all_keys()
 
         out = []
         for f in feeds:
             entry_id = f.get("entry_id")
-            field1 = f.get("field1")  # ciphertext b64
-            field2 = (f.get("field2") or "").strip()  # key_id
+            field1 = f.get("field1")
+            field2 = (f.get("field2") or "").strip()
             field3 = (f.get("field3") or "").strip()
             field4 = (f.get("field4") or "").strip()
             field5 = (f.get("field5") or "").strip()
 
-            qkey_hex = None
-            key_used = None
             decrypted_text = None
             decrypt_error = None
+            key_used = None
+            qkey_hex = None
 
+            # build key attempt list
             tried_keys = []
 
-            # 1) Try exact key if field2 provided
+            # exact key from field2
             if field2:
                 ki = quantum_key.get_key_by_id(field2)
                 if ki:
                     tried_keys.append((ki["key"], ki["iv"], "exact"))
-                else:
-                    # if exact key not found, we'll try all keys later
-                    pass
 
-            # 2) Add all keys from rotator (avoid duplicates)
+            # add all rotator keys except exact
             for k in all_keys:
                 if field2 and k["key_id"] == field2:
-                    continue  # already tried exact key
+                    continue
                 tried_keys.append((k["key"], k["iv"], "rotator"))
 
-            # 3) Add current key as fallback if not already tried
+            # add current key fallback
             if cur_key_bytes and (not tried_keys or tried_keys[-1][0] != cur_key_bytes):
                 tried_keys.append((cur_key_bytes, cur_iv_bytes, "fallback"))
 
-            # Try decryption sequentially
+            # attempt decryption sequentially
             for k_bytes, iv_bytes, usage in tried_keys:
                 decrypted_text, decrypt_error = decrypt_field(field1, k_bytes, iv_bytes)
                 if decrypted_text is not None:
@@ -150,6 +145,6 @@ def static_files(path):
     return send_from_directory(FRONTEND_DIR, "index.html")
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 5000))  # use Render's port
     print(f"Starting server on 0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=True)
