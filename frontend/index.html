@@ -1,36 +1,31 @@
 <!doctype html>
 <html>
 <head>
-  <meta charset="utf-8" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Q-SENSE Dashboard</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
 </head>
 <body>
   <header>
-    <h1>🌐 Q-SENSE IoT Dashboard</h1>
-    <p>Decrypts ThingSpeak feeds in the browser</p>
+    <h1>Q-SENSE — Quantum AES IoT</h1>
+    <p>Decrypts per-sensor quantum-encrypted data from ThingSpeak</p>
   </header>
 
   <main>
-    <div>
-      <input id="token" placeholder="ESP_AUTH_TOKEN" style="width:340px" />
-      <button id="btnFetch">Fetch Latest 20</button>
-      <span id="status"></span>
-    </div>
+    <section class="controls">
+      <label>Auth token (paste): <input id="token" placeholder="ESP_AUTH_TOKEN"/></label>
+      <button id="btnFetch">Fetch & Decrypt Latest</button>
+    </section>
 
-    <table id="data-table">
-      <thead>
-        <tr><th>ID</th><th>Created At</th><th>Temp</th><th>Hum</th><th>IR</th><th>Status</th></tr>
-      </thead>
-      <tbody></tbody>
-    </table>
-
-    <h3>Debug</h3>
-    <pre id="out" style="white-space:pre-wrap; max-height:320px; overflow:auto"></pre>
+    <section>
+      <h2>Latest entries</h2>
+      <pre id="out">No data yet.</pre>
+    </section>
   </main>
 
+  <footer>Q-SENSE &copy; 2025</footer>
   <script src="script.js"></script>
 </body>
 </html>
