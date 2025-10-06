@@ -1,104 +1,79 @@
-// script.js
-const API_BASE = window.location.origin;
+// script.js - browser decrypt pipeline
+const API_BASE = "";
 
 function hexToWordArray(hex) { return CryptoJS.enc.Hex.parse(hex); }
 function base64ToWordArray(b64) { return CryptoJS.enc.Base64.parse(b64); }
 
-async function fetchLatest() {
-  const r = await fetch(`${API_BASE}/api/latest?limit=20`);
-  if (!r.ok) throw new Error("latest fetch failed: " + r.status);
+async function fetchLatestStored(limit=10) {
+  const r = await fetch(`/api/latest?limit=${limit}`);
+  return r.json();
+}
+async function fetchServerKey(token) {
+  const r = await fetch(`/api/server_key?auth=${encodeURIComponent(token)}`);
+  if (!r.ok) throw new Error("server_key unauthorized");
+  return r.json();
+}
+async function fetchQuantumKey(token, key_id) {
+  const r = await fetch(`/api/quantum_key?auth=${encodeURIComponent(token)}&key_id=${encodeURIComponent(key_id)}`);
+  if (!r.ok) throw new Error("quantum_key fetch failed");
   return r.json();
 }
 
-function deriveSessionKeyHex(qkey_hex, nonce_hex) {
-  const concatWA = CryptoJS.enc.Hex.parse(qkey_hex + nonce_hex);
-  const hashHex = CryptoJS.SHA256(concatWA).toString(CryptoJS.enc.Hex);
-  return hashHex.substring(0, 32);
-}
-
-function decryptBase64AES_CBC(cipher_b64, key_hex, iv_hex) {
-  const keyWA = hexToWordArray(key_hex);
-  const ivWA = hexToWordArray(iv_hex);
-  const cipherWA = base64ToWordArray(cipher_b64);
+function decryptServerAES(s_b64, server_key_hex, server_iv_hex) {
+  const key = hexToWordArray(server_key_hex);
+  const iv = hexToWordArray(server_iv_hex);
+  const cipherWA = base64ToWordArray(s_b64);
   const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
-  const decryptedWA = CryptoJS.AES.decrypt(cipherParams, keyWA, { iv: ivWA, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
-  if (!decryptedWA || decryptedWA.sigBytes === 0) throw new Error("Decryption produced no bytes");
-  const txt = decryptedWA.toString(CryptoJS.enc.Utf8);
-  if (!txt) throw new Error("Decrypted text is empty or not valid UTF-8");
-  return txt;
+  const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+  return decrypted.toString(CryptoJS.enc.Utf8);
 }
 
-function renderTable(results) {
-  const tbody = document.querySelector("#data-table tbody");
-  tbody.innerHTML = "";
-  for (const item of results) {
-    const tr = document.createElement("tr");
-    const s = item.sensor || {};
-    tr.innerHTML = `
-      <td>${item.entry_id}</td>
-      <td>${item.created_at || "-"}</td>
-      <td>${s.temperature !== undefined ? Number(s.temperature).toFixed(2) : "-"}</td>
-      <td>${s.humidity !== undefined ? Number(s.humidity).toFixed(2) : "-"}</td>
-      <td>${s.ir !== undefined ? s.ir : "-"}</td>
-      <td>${item.status || "-"}</td>
-    `;
-    tbody.appendChild(tr);
-  }
+function decryptQuantumCt(ct_field_str, qkey_hex) {
+  // ct_field_str is "IVHEX.B64"
+  if (!ct_field_str) return null;
+  const parts = ct_field_str.split('.', 2);
+  if (parts.length !== 2) return null;
+  const ivHex = parts[0];
+  const b64 = parts[1];
+  const key = hexToWordArray(qkey_hex);
+  const iv = hexToWordArray(ivHex);
+  const cipherWA = base64ToWordArray(b64);
+  const cipherParams = CryptoJS.lib.CipherParams.create({ ciphertext: cipherWA });
+  const decrypted = CryptoJS.AES.decrypt(cipherParams, key, { iv: iv, mode: CryptoJS.mode.CBC, padding: CryptoJS.pad.Pkcs7 });
+  return decrypted.toString(CryptoJS.enc.Utf8);
 }
 
 document.getElementById('btnFetch').addEventListener('click', async () => {
   const token = document.getElementById('token').value.trim();
-  const statusEl = document.getElementById('status');
-  const outEl = document.getElementById('out');
+  const out = document.getElementById('out');
   if (!token) { alert('Paste ESP_AUTH_TOKEN'); return; }
-
-  statusEl.textContent = "Fetching latest...";
-  outEl.textContent = "";
-
+  out.textContent = 'Fetching...';
   try {
-    const feeds = await fetchLatest();
+    const stored = await fetchLatestStored(10);
+    if (!stored || stored.length === 0) { out.textContent = 'No stored items'; return; }
+    const serverKeyResp = await fetchServerKey(token);
+    const serverKeyHex = serverKeyResp.server_key;
+
     const results = [];
-
-    for (const f of feeds) {
-      if (!f.entry_id) continue;
-
-      // verify token
-      if ((f.field4 || "").trim() !== token) {
-        results.push({ entry_id: f.entry_id, status: "bad_token" });
-        continue;
-      }
-
-      const cipher_b64 = (f.field1 || "").trim();
-      const iv_hex = (f.field3 || "").trim();
-      const nonce_hex = (f.field5 || "").trim();
-      const qkey_hex = f.qkey_hex;
-      const key_used = f.key_used; // "exact" or "fallback" or null
-
-      if (!cipher_b64 || !iv_hex || !nonce_hex) {
-        results.push({ entry_id: f.entry_id, status: "missing_fields" });
-        continue;
-      }
-
-      if (!qkey_hex) {
-        results.push({ entry_id: f.entry_id, status: "no_key_available" });
-        continue;
-      }
-
+    for (const item of stored) {
       try {
-        const derived_hex = deriveSessionKeyHex(qkey_hex, nonce_hex);
-        const plain = decryptBase64AES_CBC(cipher_b64, derived_hex, iv_hex);
-        const sensor = JSON.parse(plain);
-        results.push({ entry_id: f.entry_id, created_at: f.created_at, sensor, status: `ok (${key_used||'unknown'})` });
+        const sPlain = decryptServerAES(item.server_cipher_b64, serverKeyHex, item.server_iv_hex);
+        const obj = JSON.parse(sPlain);
+        const qresp = await fetchQuantumKey(token, obj.key_id || "");
+        const qkeyHex = qresp.key;
+        const temp_plain = decryptQuantumCt(obj.cipher_b64 || "", qkeyHex); // NOTE: obj.cipher_b64 holds overall? per our server we used temp_ct etc
+        // actually server stored temp_ct in record; parse accordingly:
+        const rec = obj;
+        const t = decryptQuantumCt(rec.temp_ct || "", qkeyHex);
+        const h = decryptQuantumCt(rec.hum_ct || "", qkeyHex);
+        const i = decryptQuantumCt(rec.ir_ct || "", qkeyHex);
+        results.push({entry_id: item.entry_id, temperature: t, humidity: h, ir: i, received_at: rec.received_at});
       } catch (e) {
-        results.push({ entry_id: f.entry_id, status: `decrypt_error (${key_used||'unknown'}): ${e.message || e}` });
+        results.push({entry_id: item.entry_id, error: String(e)});
       }
     }
-
-    renderTable(results);
-    outEl.textContent = JSON.stringify(results, null, 2);
-    statusEl.textContent = `Processed ${results.length} entries.`;
-  } catch (err) {
-    statusEl.textContent = "Error: " + err;
-    outEl.textContent = String(err);
+    out.textContent = JSON.stringify(results, null, 2);
+  } catch (e) {
+    out.textContent = "Error: " + e;
   }
 });
