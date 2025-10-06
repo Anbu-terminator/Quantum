@@ -1,145 +1,22 @@
-/* frontend/style.css (unchanged) */
-/* Global Styles */
+/* style.css - simple attractive UI */
+:root {
+  --bg1: #071827;
+  --bg2: #0b3b4a;
+  --accent: #00f0e0;
+  --card: rgba(255,255,255,0.06);
+}
 body {
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
-  color: white;
-  margin: 0;
-  padding: 0;
-  text-align: center;
-  overflow-x: hidden;
-  animation: fadeIn 2s ease;
+  margin:0; font-family: "Segoe UI", Roboto, Arial; color:#e6fff9;
+  background: linear-gradient(135deg,var(--bg1), var(--bg2));
 }
+header { padding:28px; text-align:center; background: rgba(0,0,0,0.15); box-shadow: 0 6px 24px rgba(0,0,0,0.35); }
+h1 { margin:0; color:var(--accent); text-shadow:0 2px 10px rgba(0,240,224,0.12); }
+main { max-width:980px; margin:26px auto; padding:10px; }
+.controls { display:flex; gap:10px; justify-content:center; align-items:center; margin-bottom:18px; }
+input { padding:8px 10px; border-radius:8px; border:1px solid rgba(255,255,255,0.06); background:rgba(255,255,255,0.02); color:inherit; width:360px; }
+button { background:var(--accent); border:none; padding:10px 14px; border-radius:8px; cursor:pointer; color:#012; font-weight:600; }
+pre { background: rgba(0,0,0,0.35); border-radius:10px; padding:16px; overflow:auto; min-height:220px; box-shadow: 0 6px 20px rgba(0,0,0,0.4); }
+footer { text-align:center; padding:14px; opacity:0.7; margin-top:20px; }
 
-/* Header */
-header {
-  padding: 20px;
-  background: rgba(0,0,0,0.5);
-  box-shadow: 0px 4px 10px rgba(0,0,0,0.3);
-  animation: fadeIn 2s ease;
-}
-header h1 {
-  font-size: 2.5rem;
-  text-shadow: 2px 2px 10px cyan;
-  animation: glowPulse 2s infinite alternate;
-}
-header p {
-  font-size: 1.2rem;
-  opacity: 0.8;
-  animation: fadeIn 2.5s ease;
-}
-
-/* Main Sections */
-main {
-  padding: 30px;
-  animation: fadeIn 2s ease;
-}
-
-/* Token Input Section */
-.token-input {
-  margin-bottom: 20px;
-  animation: fadeIn 2s ease;
-}
-.token-input input, .token-input button {
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: none;
-  margin-right: 5px;
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
-}
-.token-input button:hover {
-  transform: scale(1.05);
-  box-shadow: 0 0 10px cyan;
-}
-
-/* Table Design */
-#data-table {
-  width: 90%;
-  max-width: 900px;
-  margin: 20px auto;
-  border-collapse: collapse;
-  background: rgba(255,255,255,0.05);
-  border-radius: 12px;
-  overflow: hidden;
-  box-shadow: 0 0 20px rgba(0,255,255,0.2);
-  animation: glowPulse 2s infinite alternate;
-}
-#data-table th, #data-table td {
-  border: 1px solid rgba(255,255,255,0.2);
-  padding: 10px;
-  text-align: center;
-  font-size: 0.95rem;
-}
-#data-table th {
-  background: rgba(0,255,255,0.1);
-  text-shadow: 0 0 5px cyan;
-}
-#data-table tbody tr:hover {
-  transform: scale(1.02);
-  background: rgba(0,255,255,0.1);
-  transition: transform 0.3s ease, background 0.3s ease;
-}
-
-/* Card Design */
-.card {
-  background: rgba(255,255,255,0.1);
-  border-radius: 15px;
-  padding: 20px;
-  margin: 20px auto;
-  width: 300px;
-  box-shadow: 0px 0px 20px rgba(0,255,255,0.3);
-  transition: transform 0.4s ease, box-shadow 0.4s ease;
-  animation: glowPulse 2s infinite alternate;
-}
-.card:hover {
-  transform: scale(1.05);
-  box-shadow: 0px 0px 25px rgba(0,255,255,0.7);
-}
-
-/* History Section */
-.history {
-  margin-top: 40px;
-  animation: fadeIn 2s ease;
-}
-#history-list {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 15px;
-}
-#history-list .history-card {
-  background: rgba(255,255,255,0.1);
-  border-radius: 12px;
-  padding: 15px;
-  width: 200px;
-  text-align: left;
-  font-size: 0.9rem;
-  box-shadow: 0px 0px 10px rgba(255,255,255,0.2);
-  transition: 0.3s ease;
-  animation: glowPulse 2s infinite alternate;
-}
-#history-list .history-card:hover {
-  transform: translateY(-5px) scale(1.02);
-  box-shadow: 0px 0px 20px rgba(0,255,255,0.6);
-}
-
-/* Footer */
-footer {
-  margin-top: 50px;
-  padding: 15px;
-  font-size: 0.8rem;
-  opacity: 0.7;
-  background: rgba(0,0,0,0.3);
-  animation: fadeIn 2s ease;
-}
-
-/* Animations */
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(-20px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-@keyframes glowPulse {
-  from { box-shadow: 0px 0px 10px rgba(0,255,255,0.3); }
-  to { box-shadow: 0px 0px 25px rgba(0,255,255,0.7); }
-}
+/* small animations */
+button:hover { transform:translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
