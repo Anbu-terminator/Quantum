@@ -1,120 +1,81 @@
 # server.py
-from flask import Flask, jsonify
+from flask import Flask, jsonify, send_from_directory
 import requests
-import json
-import config
-from quantum_key import get_server_key_bytes
-import hashlib
+from base64 import b64encode, b64decode
 from Crypto.Cipher import AES
-from base64 import b64decode
+from Crypto.Util.Padding import unpad
+import binascii
+import config
+from quantum_key import get_quantum_tag
+import hashlib
+import hmac
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="../frontend", static_url_path="/")
 
-TS_FEED_URL = f"https://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?results=5&api_key={config.THINGSPEAK_READ_KEY}"
+THINGSPEAK_FEEDS_URL = f"https://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?results=5"
 
-def derive_session_key(server_key_bytes: bytes, nonce_bytes: bytes) -> bytes:
-    # SHA-256(server_key || nonce) then take first 16 bytes
-    h = hashlib.sha256()
-    h.update(server_key_bytes)
-    h.update(nonce_bytes)
-    full = h.digest()
-    return full[:16]
+def hex_to_bytes(h: str) -> bytes:
+    return binascii.unhexlify(h)
 
-def pkcs7_unpad(b: bytes) -> bytes:
-    if len(b) == 0:
-        return b
-    pad = b[-1]
-    if pad < 1 or pad > 16:
-        # invalid padding
-        return b
-    return b[:-pad]
+AES_KEY = hex_to_bytes(config.SERVER_AES_KEY_HEX)
 
-def decrypt_aes_cbc(session_key: bytes, iv_hex: str, cipher_b64: str) -> str:
-    iv = bytes.fromhex(iv_hex)
-    cipher_bytes = b64decode(cipher_b64)
-    cipher = AES.new(session_key, AES.MODE_CBC, iv)
-    plain_padded = cipher.decrypt(cipher_bytes)
-    plain = pkcs7_unpad(plain_padded)
+def verify_and_decrypt_field(field_value: str):
+    """
+    Expect field_value format: base64(iv + ciphertext) | base64(hmac_tag)
+    Returns decrypted string on success, or an error message.
+    """
     try:
-        return plain.decode('utf-8')
-    except:
-        return plain.hex()
+        if "|" not in field_value:
+            return {"ok": False, "error": "invalid_format"}
+        part_enc, part_tag = field_value.split("|", 1)
+        enc = b64decode(part_enc)
+        tag = b64decode(part_tag)
+        # split iv (16) + ciphertext
+        iv = enc[:16]
+        ciphertext = enc[16:]
+        # verify quantum tag: recompute the same algorithm used on device
+        # here we call get_quantum_tag to generate expected tag (it uses HMAC of ciphertext and token)
+        expected_tag_b64 = get_quantum_tag(config.IBM_API_TOKEN, ciphertext, length=len(tag), use_ibm=config.USE_IBM_QUANTUM)
+        expected_tag = b64decode(expected_tag_b64)
+        if not hmac.compare_digest(expected_tag, tag):
+            return {"ok": False, "error": "tag_mismatch"}
+        # decrypt AES-128-CBC
+        cipher = AES.new(AES_KEY, AES.MODE_CBC, iv)
+        plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
+        return {"ok": True, "value": plaintext.decode('utf-8')}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
-@app.route('/latest')
-def latest():
-    # fetch ThingSpeak channel recent feeds
-    r = requests.get(TS_FEED_URL, timeout=10)
-    if r.status_code != 200:
-        return jsonify({"error": "failed fetch", "status": r.status_code}), 502
-
-    data = r.json()
+@app.route("/api/latest")
+def api_latest():
+    resp = requests.get(THINGSPEAK_FEEDS_URL, params={"api_key": config.THINGSPEAK_READ_KEY})
+    if resp.status_code != 200:
+        return jsonify({"ok": False, "error": "thingspeak_fetch_failed", "status": resp.status_code}), 500
+    data = resp.json()
     feeds = data.get("feeds", [])
-    out = []
-    for feed in feeds:
-        # expected layout:
-        # field1 = key_id
-        # field2 = temp_b64|ivTempHex
-        # field3 = hum_b64|ivHumHex
-        # field4 = ir_b64|ivIrHex
-        # field5 = nonceHex
-        key_id = feed.get("field1")
-        field2 = feed.get("field2") or ""
-        field3 = feed.get("field3") or ""
-        field4 = feed.get("field4") or ""
-        nonceHex = feed.get("field5") or ""
+    if not feeds:
+        return jsonify({"ok": True, "feeds": []})
+    latest = feeds[-1]
+    # fields 1..5
+    decoded = {}
+    for i in range(1,6):
+        key = f"field{i}"
+        raw = latest.get(key)
+        if raw is None:
+            decoded[key] = {"ok": False, "error": "missing_field"}
+            continue
+        decoded[key] = verify_and_decrypt_field(raw)
+    # Also include feed created_at, entry_id
+    return jsonify({"ok": True, "entry_id": latest.get("entry_id"), "created_at": latest.get("created_at"), "decoded": decoded})
 
-        entry = {"created_at": feed.get("created_at"), "key_id": key_id}
+# Serve frontend files
+@app.route("/")
+def index():
+    return send_from_directory(app.static_folder, "index.html")
 
-        # parse pairs
-        def parse_pair(s):
-            if '|' in s:
-                a,b = s.split('|',1)
-                return a,b
-            return s, None
-
-        temp_b64, ivTempHex = parse_pair(field2)
-        hum_b64, ivHumHex = parse_pair(field3)
-        ir_b64, ivIrHex = parse_pair(field4)
-
-        # get server key bytes (may ignore key_id for now)
-        server_key = get_server_key_bytes(key_id)
-
-        try:
-            nonce_bytes = bytes.fromhex(nonceHex)
-        except:
-            nonce_bytes = b'\x00'*16
-
-        session_key = derive_session_key(server_key, nonce_bytes)
-
-        # decrypt each (if possible)
-        try:
-            temp_plain = decrypt_aes_cbc(session_key, ivTempHex, temp_b64) if temp_b64 and ivTempHex else None
-        except Exception as e:
-            temp_plain = f"decrypt_error:{str(e)}"
-        try:
-            hum_plain = decrypt_aes_cbc(session_key, ivHumHex, hum_b64) if hum_b64 and ivHumHex else None
-        except Exception as e:
-            hum_plain = f"decrypt_error:{str(e)}"
-        try:
-            ir_plain = decrypt_aes_cbc(session_key, ivIrHex, ir_b64) if ir_b64 and ivIrHex else None
-        except Exception as e:
-            ir_plain = f"decrypt_error:{str(e)}"
-
-        entry.update({
-            "temperature_encrypted": temp_b64,
-            "temperature_iv": ivTempHex,
-            "temperature": temp_plain,
-            "humidity_encrypted": hum_b64,
-            "humidity_iv": ivHumHex,
-            "humidity": hum_plain,
-            "ir_encrypted": ir_b64,
-            "ir_iv": ivIrHex,
-            "ir": ir_plain,
-            "nonce": nonceHex
-        })
-        out.append(entry)
-
-    return jsonify({"feeds_decrypted": out})
+@app.route("/<path:p>")
+def static_proxy(p):
+    return send_from_directory(app.static_folder, p)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
