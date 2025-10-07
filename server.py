@@ -2,9 +2,9 @@ from flask import Flask, jsonify, request, send_from_directory
 import os, binascii, requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-from qiskit_ibm_runtime import QiskitRuntimeService, Sampler
 from config import *
 
+# Set Flask static folder to frontend
 app = Flask(__name__, static_folder="../frontend", static_url_path="")
 
 # ---------------- Helper functions ----------------
@@ -24,42 +24,17 @@ def aes_decrypt_hex(iv_hex, cipher_hex, key_hex):
     return pt.decode('utf-8', errors='replace')
 
 # --------------- Serve frontend -----------------
-@app.route("/")
-def serve_index():
-    return send_from_directory(app.static_folder, "index.html")
-
+@app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
-def serve_static(path):
-    return send_from_directory(app.static_folder, path)
-
-# --------------- Quantum Nonce ------------------
-@app.route("/quantum_nonce", methods=["GET"])
-def quantum_nonce():
-    token = request.args.get("token", "")
-    if token != ESP_AUTH_TOKEN:
-        return jsonify({"error": "unauthorized"}), 401
-    n_bytes = int(request.args.get("n", 16))
-    try:
-        svc = QiskitRuntimeService(channel="ibm_quantum", token=IBM_API_TOKEN)
-        sampler = Sampler(service=svc)
-        from qiskit import QuantumCircuit
-        bits_needed = n_bytes*8
-        chunks = (bits_needed+7)//8
-        combined = ''
-        for _ in range(chunks):
-            qc = QuantumCircuit(8,8)
-            qc.h(range(8))
-            qc.measure(range(8), range(8))
-            job = sampler.run(qc, shots=1)
-            res = job.result()
-            bitstr = list(res.counts().keys())[0]
-            combined += bitstr
-        combined = combined[:bits_needed]
-        b = int(combined,2).to_bytes(n_bytes, 'big')
-        return jsonify({"status":"ok","nonce_hex":binascii.hexlify(b).decode()})
-    except Exception as e:
-        fallback = os.urandom(n_bytes)
-        return jsonify({"status":"fallback","nonce_hex":binascii.hexlify(fallback).decode(),"error":str(e)})
+def serve_frontend(path):
+    """
+    Serve index.html for all routes, so that React-style SPA works.
+    """
+    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    else:
+        # fallback to index.html
+        return send_from_directory(app.static_folder, "index.html")
 
 # --------------- Decrypt ThingSpeak ------------------
 @app.route("/decrypt_latest", methods=["GET"])
@@ -92,5 +67,18 @@ def decrypt_latest():
             out[field_key] = {"error":"unexpected_format","raw":raw}
     return jsonify({"status":"ok","data":out,"created_at":latest.get("created_at")})
 
+# --------------- Quantum Nonce ------------------
+@app.route("/quantum_nonce", methods=["GET"])
+def quantum_nonce():
+    # You can import and call quantum_key.py function here
+    from quantum_key import generate_quantum_nonce
+    token = request.args.get("token", "")
+    if token != ESP_AUTH_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
+    n_bytes = int(request.args.get("n", 16))
+    nonce_hex = generate_quantum_nonce(n_bytes)
+    return jsonify({"status":"ok","nonce_hex":nonce_hex})
+
+# ------------------- Main ------------------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
