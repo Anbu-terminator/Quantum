@@ -5,7 +5,7 @@ from Crypto.Util.Padding import unpad
 from config import *
 
 # Set Flask static folder to frontend
-app = Flask(__name__, static_folder="../frontend", static_url_path="")
+app = Flask(__name__, static_folder="../frontend", static_url_path="index.html")
 
 # ---------------- Helper functions ----------------
 def hx(s):
