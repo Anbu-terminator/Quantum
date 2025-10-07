@@ -1,34 +1,49 @@
-async function fetchData(){
-  const out = document.getElementById('readings');
-  out.innerText = 'Fetching...';
-  try{
-    const res = await fetch('/decrypt_latest');
-    if(!res.ok){
-      out.innerText = 'Server error: '+res.status;
-      return;
-    }
-    const j = await res.json();
-    if(j.error){
-      out.innerText = 'Error: '+JSON.stringify(j);
-      return;
-    }
-    const data = j.data;
-    out.innerHTML = '';
-    for(let i=1;i<=5;i++){
-      const k = 'field'+i;
-      const d = data[k];
-      const div = document.createElement('div');
-      div.className = 'reading';
-      div.innerHTML = `<strong>${k}</strong>: ${d===null?'<em>empty</em>':(typeof d==='object'?JSON.stringify(d):d)}`;
-      out.appendChild(div);
-    }
-    const ts = document.createElement('div');
-    ts.style.marginTop='8px'; ts.style.fontSize='0.9em';
-    ts.innerText = 'Created at: '+(j.created_at||'-');
-    out.appendChild(ts);
-  }catch(e){
-    out.innerText='Fetch failed: '+e.toString();
+const API = "/latest"; // If serving frontend from same server, proxied; otherwise use full URL like http://server:5000/latest
+
+async function fetchLatest() {
+  try {
+    const res = await fetch(API);
+    if (!res.ok) throw new Error('Fetch failed: ' + res.status);
+    const json = await res.json();
+    render(json);
+  } catch (err) {
+    document.getElementById('cards').innerHTML = `<div class="card"><h2>Error</h2><p>${err.message}</p></div>`;
   }
 }
-document.getElementById('refresh').addEventListener('click',fetchData);
-fetchData();
+
+function render(data) {
+  const cards = document.getElementById('cards');
+  cards.innerHTML = "";
+
+  const feeds = (data.feeds_decrypted || []);
+  if (feeds.length === 0) {
+    cards.innerHTML = `<div class="card"><h2>No data</h2><p>--</p></div>`;
+    return;
+  }
+
+  // show the latest feed (first in list)
+  const latest = feeds[0];
+  document.getElementById('last-updated').textContent = `Latest: ${latest.created_at || 'unknown'}`;
+
+  // Temperature
+  const tempCard = document.createElement('div'); tempCard.className = 'card';
+  tempCard.innerHTML = `<h2>Temperature</h2><p>${latest.temperature ?? '—'}</p>`;
+  cards.appendChild(tempCard);
+
+  // Humidity
+  const humCard = document.createElement('div'); humCard.className = 'card';
+  humCard.innerHTML = `<h2>Humidity</h2><p>${latest.humidity ?? '—'}</p>`;
+  cards.appendChild(humCard);
+
+  // IR
+  const irCard = document.createElement('div'); irCard.className = 'card';
+  irCard.innerHTML = `<h2>IR Sensor</h2><p>${latest.ir ?? '—'}</p>`;
+  cards.appendChild(irCard);
+
+  // Raw JSON
+  document.getElementById('raw').textContent = JSON.stringify(latest, null, 2);
+}
+
+// simple polling every 15s
+fetchLatest();
+setInterval(fetchLatest, 15000);
