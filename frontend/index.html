@@ -1,16 +1,23 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Q-SENSE Dashboard</title>
-<link rel="stylesheet" href="style.css">
+  <meta charset="utf-8">
+  <title>Q-SENSE Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="container">
-  <h1>Q-SENSE — Decrypted Sensor Readings</h1>
-  <div id="readings">Loading...</div>
-  <button id="refresh">Refresh</button>
-</div>
-<script src="script.js"></script>
+  <div class="container">
+    <h1>Q-SENSE — Live Decrypted Readings</h1>
+    <div id="meta"></div>
+    <table>
+      <thead>
+        <tr><th>Field</th><th>Decrypted Value</th><th>Status</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p><small>Data pulled from ThingSpeak channel ID <strong>3100917</strong>.</small></p>
+  </div>
+  <script src="script.js"></script>
 </body>
 </html>
