@@ -1,20 +1,16 @@
-# server.py
-from flask import Flask, request, jsonify, abort
-import requests
-import binascii
-import os
+from flask import Flask, jsonify, request, send_from_directory
+import os, binascii, requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-from qiskit_ibm_runtime import QiskitRuntimeService, Sampler, Session
-import config
+from qiskit_ibm_runtime import QiskitRuntimeService, Sampler
+from config import *
 
-app = Flask(__name__)
+app = Flask(__name__, static_folder="../frontend", static_url_path="")
 
-# Helper: hex -> bytes
+# ---------------- Helper functions ----------------
 def hx(s):
     return binascii.unhexlify(s)
 
-# Helper: AES-128-CBC decrypt; expects iv (16 bytes) and ciphertext bytes
 def aes_decrypt_hex(iv_hex, cipher_hex, key_hex):
     iv = hx(iv_hex)
     ct = hx(cipher_hex)
@@ -24,90 +20,77 @@ def aes_decrypt_hex(iv_hex, cipher_hex, key_hex):
     try:
         pt = unpad(pt, AES.block_size)
     except ValueError:
-        # If padding fails, still return raw bytes as fallback
         pass
     return pt.decode('utf-8', errors='replace')
 
-# Endpoint: serve quantum nonce(s)
-@app.route('/quantum_nonce', methods=['GET'])
+# --------------- Serve frontend -----------------
+@app.route("/")
+def serve_index():
+    return send_from_directory(app.static_folder, "index.html")
+
+@app.route("/<path:path>")
+def serve_static(path):
+    return send_from_directory(app.static_folder, path)
+
+# --------------- Quantum Nonce ------------------
+@app.route("/quantum_nonce", methods=["GET"])
 def quantum_nonce():
-    # simple auth: expect ?token=ESP_AUTH_TOKEN
-    token = request.args.get('token', '')
-    if token != config.ESP_AUTH_TOKEN:
-        abort(401)
-    # number of bytes requested (default 16)
-    n_bytes = int(request.args.get('n', 16))
-    # Use Qiskit Runtime Service to sample n_bytes worth of bits.
-    # We'll generate n_bytes * 8 random bits by measuring qubits in H-basis.
-    # NOTE: Service requires qiskit-ibm-runtime package and valid IBM_API_TOKEN.
+    token = request.args.get("token", "")
+    if token != ESP_AUTH_TOKEN:
+        return jsonify({"error": "unauthorized"}), 401
+    n_bytes = int(request.args.get("n", 16))
     try:
-        svc = QiskitRuntimeService(channel="ibm_quantum", token=config.IBM_API_TOKEN)
-        # Use Sampler to sample single-qubit H circuits repeated to get bits.
+        svc = QiskitRuntimeService(channel="ibm_quantum", token=IBM_API_TOKEN)
         sampler = Sampler(service=svc)
-        # We will create a circuit that applies H on n_qubits and measure
-        # but Sampler can be used with options; for simplicity, use sampler.run
-        # We'll create enough qubits to get n_bytes*8 bits in one shot or multiple shots.
-        # To keep runtime short, sample 8-bit chunks per shot.
-        bits_needed = n_bytes * 8
-        # We'll sample 8 qubits at a time and do ceil(bits_needed/8) shots
-        chunks = (bits_needed + 7) // 8
-        all_bits = []
         from qiskit import QuantumCircuit
+        bits_needed = n_bytes*8
+        chunks = (bits_needed+7)//8
+        combined = ''
         for _ in range(chunks):
-            qc = QuantumCircuit(8, 8)
+            qc = QuantumCircuit(8,8)
             qc.h(range(8))
             qc.measure(range(8), range(8))
-            job = sampler.run(qc, shots=1)  # one shot returns 8 bits
+            job = sampler.run(qc, shots=1)
             res = job.result()
-            counts = res.counts()
-            # counts keys are bitstrings like '00010101'; get the key
-            bitstr = list(counts.keys())[0]
-            # append LSB-first or MSB? Qiskit uses order that match counts (big-endian).
-            all_bits.append(bitstr)
-        combined = ''.join(all_bits)[:bits_needed]
-        # convert bits to bytes
-        b = int(combined, 2).to_bytes(n_bytes, 'big')
-        return jsonify({"status": "ok", "nonce_hex": binascii.hexlify(b).decode()})
+            bitstr = list(res.counts().keys())[0]
+            combined += bitstr
+        combined = combined[:bits_needed]
+        b = int(combined,2).to_bytes(n_bytes, 'big')
+        return jsonify({"status":"ok","nonce_hex":binascii.hexlify(b).decode()})
     except Exception as e:
-        # If quantum service fails (rate limits/availability), fallback to os.urandom
         fallback = os.urandom(n_bytes)
-        return jsonify({"status": "fallback", "nonce_hex": binascii.hexlify(fallback).decode(), "error": str(e)})
+        return jsonify({"status":"fallback","nonce_hex":binascii.hexlify(fallback).decode(),"error":str(e)})
 
-# Endpoint: decrypt latest ThingSpeak feed and return plaintext
-@app.route('/decrypt_latest', methods=['GET'])
+# --------------- Decrypt ThingSpeak ------------------
+@app.route("/decrypt_latest", methods=["GET"])
 def decrypt_latest():
-    # no auth for frontend; you can add auth if desired
-    channel = config.THINGSPEAK_CHANNEL_ID
-    read_key = config.THINGSPEAK_READ_KEY
-    url = f"https://api.thingspeak.com/channels/{channel}/feeds.json?results=1&api_key={read_key}"
+    url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json?results=1&api_key={THINGSPEAK_READ_KEY}"
     r = requests.get(url, timeout=10)
     if r.status_code != 200:
-        return jsonify({"error": "ThingSpeak fetch failed", "status_code": r.status_code}), 502
+        return jsonify({"error": "ThingSpeak fetch failed"}), 502
     data = r.json()
-    feeds = data.get('feeds', [])
+    feeds = data.get("feeds", [])
     if not feeds:
-        return jsonify({"error": "no feeds"}), 404
+        return jsonify({"error":"no feeds"}), 404
     latest = feeds[0]
-    # Fields: field1..field5
     out = {}
-    for i in range(1, 6):
-        field_key = f'field{i}'
+    for i in range(1,6):
+        field_key = f"field{i}"
         raw = latest.get(field_key)
         if raw is None:
             out[field_key] = None
             continue
         raw = raw.strip()
-        # Expect form ivhex:cipherhex
-        if ':' in raw:
-            iv_hex, cipher_hex = raw.split(':', 1)
+        if ":" in raw:
+            iv_hex, cipher_hex = raw.split(":",1)
             try:
-                pt = aes_decrypt_hex(iv_hex, cipher_hex, config.SERVER_AES_KEY_HEX)
+                pt = aes_decrypt_hex(iv_hex, cipher_hex, SERVER_AES_KEY_HEX)
                 out[field_key] = pt
             except Exception as e:
-                out[field_key] = {"error": "decrypt_failed", "detail": str(e), "raw": raw}
+                out[field_key] = {"error":"decrypt_failed","detail":str(e),"raw":raw}
         else:
-            out[field_key] = {"error": "unexpected_format", "raw": raw}
-    return jsonify({"status":"ok", "data": out, "created_at": latest.get('created_at')})
+            out[field_key] = {"error":"unexpected_format","raw":raw}
+    return jsonify({"status":"ok","data":out,"created_at":latest.get("created_at")})
 
-if __name__ == '__main__':
-    app.run(host=config.SERVER_HOST, port=config.SERVER_PORT, debug=True)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",5000)))
