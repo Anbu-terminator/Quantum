@@ -1,49 +1,30 @@
-const API = "/latest"; // If serving frontend from same server, proxied; otherwise use full URL like http://server:5000/latest
-
-async function fetchLatest() {
-  try {
-    const res = await fetch(API);
-    if (!res.ok) throw new Error('Fetch failed: ' + res.status);
-    const json = await res.json();
-    render(json);
-  } catch (err) {
-    document.getElementById('cards').innerHTML = `<div class="card"><h2>Error</h2><p>${err.message}</p></div>`;
+async function loadLatest(){
+  try{
+    const r = await fetch('/api/latest');
+    const j = await r.json();
+    const rows = document.getElementById('rows');
+    rows.innerHTML = '';
+    document.getElementById('meta').innerText = `Entry: ${j.entry_id || '-'}  |  Time: ${j.created_at || '-'}`;
+    if(!j.ok){ rows.innerHTML = `<tr><td colspan="3">Error: ${j.error}</td></tr>`; return; }
+    const dec = j.decoded || {};
+    for(let i=1;i<=5;i++){
+      const key = 'field'+i;
+      const cell = dec[key];
+      let status = 'unknown';
+      let val = '';
+      if(!cell) { status='missing'; }
+      else if(cell.ok){
+        status = 'ok';
+        val = cell.value;
+      } else {
+        status = cell.error;
+      }
+      rows.innerHTML += `<tr><td>${key}</td><td>${val}</td><td class="${status==='ok' ? 'ok' : 'err'}">${status}</td></tr>`;
+    }
+  }catch(e){
+    document.getElementById('rows').innerHTML = `<tr><td colspan="3">Fetch error: ${e.toString()}</td></tr>`;
   }
 }
 
-function render(data) {
-  const cards = document.getElementById('cards');
-  cards.innerHTML = "";
-
-  const feeds = (data.feeds_decrypted || []);
-  if (feeds.length === 0) {
-    cards.innerHTML = `<div class="card"><h2>No data</h2><p>--</p></div>`;
-    return;
-  }
-
-  // show the latest feed (first in list)
-  const latest = feeds[0];
-  document.getElementById('last-updated').textContent = `Latest: ${latest.created_at || 'unknown'}`;
-
-  // Temperature
-  const tempCard = document.createElement('div'); tempCard.className = 'card';
-  tempCard.innerHTML = `<h2>Temperature</h2><p>${latest.temperature ?? '—'}</p>`;
-  cards.appendChild(tempCard);
-
-  // Humidity
-  const humCard = document.createElement('div'); humCard.className = 'card';
-  humCard.innerHTML = `<h2>Humidity</h2><p>${latest.humidity ?? '—'}</p>`;
-  cards.appendChild(humCard);
-
-  // IR
-  const irCard = document.createElement('div'); irCard.className = 'card';
-  irCard.innerHTML = `<h2>IR Sensor</h2><p>${latest.ir ?? '—'}</p>`;
-  cards.appendChild(irCard);
-
-  // Raw JSON
-  document.getElementById('raw').textContent = JSON.stringify(latest, null, 2);
-}
-
-// simple polling every 15s
-fetchLatest();
-setInterval(fetchLatest, 15000);
+loadLatest();
+setInterval(loadLatest, 15_000); // refresh every 15s
