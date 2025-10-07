@@ -1,4 +1,9 @@
-body { font-family: Arial,sans-serif; background:#f3f3f3; color:#222; padding:24px; }
-.container { max-width:700px; margin:0 auto; background:white; padding:20px; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.08); }
-#readings { margin-top:12px; }
-.reading { padding:8px; border-bottom:1px solid #eee; }
+body { font-family: Inter, system-ui, Arial, sans-serif; background:#f7f8fb; color:#111; margin:0; padding:20px;}
+.container { max-width:900px; margin:0 auto; }
+h1 { margin:0 0 12px 0; font-size:24px; }
+.meta { color:#666; margin-bottom:12px; }
+.cards { display:flex; gap:12px; flex-wrap:wrap; }
+.card { background:white; padding:16px; border-radius:10px; box-shadow:0 6px 16px rgba(20,20,40,0.06); min-width:200px; flex:1 1 200px;}
+.card h2 { margin:0 0 8px 0; font-size:14px; color:#333; }
+.card p { margin:0; font-size:20px; font-weight:600; }
+.raw { margin-top:16px; font-family:monospace; font-size:12px; color:#333; white-space:pre-wrap; background:#fff; padding:12px; border-radius:8px;}
