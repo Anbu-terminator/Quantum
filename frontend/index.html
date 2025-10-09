@@ -1,24 +1,27 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>Q-SENSE Dashboard</title>
-    <link rel="stylesheet" href="style.css">
+  <meta charset="utf-8" />
+  <title>Q-SENSE Dashboard</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-    <div class="container">
-        <h1>Q-SENSE Dashboard</h1>
-        <div id="feeds">
-            <h2>Latest Sensor Data</h2>
-            <ul id="feed-list"></ul>
-        </div>
-        <div id="quantum">
-            <h2>Quantum Challenge</h2>
-            <button id="new-challenge">Get New Challenge</button>
-            <pre id="challenge-info"></pre>
-        </div>
+  <main>
+    <h1>Q-SENSE — Live</h1>
+    <div id="status">Loading...</div>
+    <div class="grid">
+      <div class="card"><h2>Device</h2><div id="Label1">—</div><div class="meta" id="mLabel1"></div></div>
+      <div class="card"><h2>Temperature</h2><div id="Temperature">—</div><div class="meta" id="mTemperature"></div></div>
+      <div class="card"><h2>Humidity</h2><div id="Humidity">—</div><div class="meta" id="mHumidity"></div></div>
+      <div class="card"><h2>IR</h2><div id="IR">—</div><div class="meta" id="mIR"></div></div>
+      <div class="card"><h2>Location</h2><div id="Label2">—</div><div class="meta" id="mLabel2"></div></div>
     </div>
-
-    <script src="script.js"></script>
+    <section class="proof">
+      <h3>Last Raw Feed (debug)</h3>
+      <pre id="raw">—</pre>
+    </section>
+  </main>
+  <script src="script.js"></script>
 </body>
 </html>
