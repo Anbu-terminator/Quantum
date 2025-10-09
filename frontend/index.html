@@ -1,29 +1,24 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <title>Q-SENSE Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="style.css" />
+    <meta charset="UTF-8">
+    <title>Q-SENSE Dashboard</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main>
-    <h1>Q-SENSE Live</h1>
-    <div id="status">Loading…</div>
-
-    <div class="grid">
-      <div class="card"><h2>Temperature</h2><div id="temp">—</div><div id="qtemp" class="qbit"></div></div>
-      <div class="card"><h2>Humidity</h2><div id="hum">—</div><div id="qhum" class="qbit"></div></div>
-      <div class="card"><h2>IR</h2><div id="ir">—</div><div id="qir" class="qbit"></div></div>
-      <div class="card"><h2>Label1</h2><div id="l1">—</div><div id="ql1" class="qbit"></div></div>
-      <div class="card"><h2>Label2</h2><div id="l2">—</div><div id="ql2" class="qbit"></div></div>
+    <div class="container">
+        <h1>Q-SENSE Dashboard</h1>
+        <div id="feeds">
+            <h2>Latest Sensor Data</h2>
+            <ul id="feed-list"></ul>
+        </div>
+        <div id="quantum">
+            <h2>Quantum Challenge</h2>
+            <button id="new-challenge">Get New Challenge</button>
+            <pre id="challenge-info"></pre>
+        </div>
     </div>
 
-    <div class="quantum-proof">
-      <h3>Last Quantum Proof (by challenge)</h3>
-      <pre id="qproof">—</pre>
-    </div>
-  </main>
-  <script src="script.js"></script>
+    <script src="script.js"></script>
 </body>
 </html>
