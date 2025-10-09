@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, send_from_directory, request, abort
-import requests, base64, json, uuid, os
+import requests, base64, uuid, os
 from binascii import unhexlify
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
@@ -30,17 +30,13 @@ def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
 def fetch_thingspeak_latest():
     try:
         url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
-        params = {
-            "api_key": THINGSPEAK_READ_KEY,
-            "results": 1  # fetch only the latest feed
-        }
+        params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
-        data = r.json()
-        feeds = data.get("feeds", [])
+        feeds = r.json().get("feeds", [])
         return feeds[-1] if feeds else None
     except Exception as e:
-        print("Error fetching ThingSpeak:", e)
+        print("ThingSpeak fetch error:", e)
         return None
 
 # --- API: Quantum Challenge ---
@@ -79,10 +75,13 @@ def api_latest():
             decrypted[fname] = {"value": None, "challenge_id": "N/A", "challenge_token": "N/A"}
             continue
 
-        # Split the value into AES part, challenge ID, and token
         try:
+            # Split into cipher, cid, token (from ESP payload)
             cipher_b64, cid, token = raw.split("::")
             pt = aes_decrypt_base64(cipher_b64, SERVER_AES_KEY_HEX, AES_IV_HEX)
+            # If ESP also appended cid::token inside plaintext, remove it
+            if "::" in pt:
+                pt = pt.split("::")[0]  # real sensor value only
         except Exception as e:
             pt = raw
             cid = "N/A"
