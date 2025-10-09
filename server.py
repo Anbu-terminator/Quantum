@@ -1,34 +1,24 @@
 # backend/server.py
 from flask import Flask, jsonify, request, abort, send_from_directory
-import requests, base64, json, threading, uuid, os
+import requests, base64, json, threading, uuid
 from binascii import unhexlify
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from Crypto.Hash import HMAC, SHA256
 from config import *
 from ibm_runtime import submit_quantum_job, retrieve_job_result
+import os
 
-# ---------------- PATH SETUP ----------------
-# Make sure this points to your actual frontend folder
-# Example project structure:
-# project_root/
-#   ├── backend/
-#   │    └── server.py
-#   └── frontend/
-#        └── index.html
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Set the frontend folder
 FRONTEND_FOLDER = os.path.join(BASE_DIR, "../frontend")
-FRONTEND_FOLDER = os.path.normpath(FRONTEND_FOLDER)  # Normalize path
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
-# ---------------- MEMORY / CONFIG ----------------
+# In-memory challenges storage
 challenges = {}
+
 TS_CHANNEL_FEEDS_URL = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
 
-
-# ---------------- UTILITIES ----------------
 def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
     try:
         data = base64.b64decode(cipher_b64)
@@ -37,10 +27,8 @@ def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
         cipher = AES.new(key, AES.MODE_CBC, iv)
         pt = unpad(cipher.decrypt(data), AES.block_size)
         return pt.decode('utf-8')
-    except Exception as e:
-        print("AES decryption error:", e)
+    except:
         return None
-
 
 def verify_hmac(hmac_b64: str, message: str, key: str) -> bool:
     try:
@@ -48,10 +36,8 @@ def verify_hmac(hmac_b64: str, message: str, key: str) -> bool:
         expected.update(message.encode('utf-8'))
         exp_b = base64.urlsafe_b64encode(expected.digest()).decode('utf-8').rstrip('=')
         return hmac_b64 == exp_b
-    except Exception as e:
-        print("HMAC verification error:", e)
+    except:
         return False
-
 
 def background_quantum_runner(challenge_id: str, job_obj):
     try:
@@ -62,8 +48,8 @@ def background_quantum_runner(challenge_id: str, job_obj):
         challenges[challenge_id]["status"] = "failed"
         challenges[challenge_id]["proof"] = {"error": str(e)}
 
-
 # ---------------- API ROUTES ----------------
+
 @app.route('/quantum/challenge', methods=['GET'])
 def create_challenge():
     challenge_id = str(uuid.uuid4())
@@ -74,12 +60,7 @@ def create_challenge():
         job_info = submit_quantum_job()
         job_id = job_info.get('job_id')
         challenges[challenge_id]["job_id"] = job_id
-
-        t = threading.Thread(
-            target=background_quantum_runner,
-            args=(challenge_id, job_info.get('internal_job')),
-            daemon=True
-        )
+        t = threading.Thread(target=background_quantum_runner, args=(challenge_id, job_info.get('internal_job')), daemon=True)
         t.start()
     except Exception as e:
         challenges[challenge_id]["status"] = "failed"
@@ -88,7 +69,6 @@ def create_challenge():
 
     return jsonify({"ok": True, "challenge_id": challenge_id, "challenge_token": challenge_token})
 
-
 @app.route('/quantum/status/<challenge_id>', methods=['GET'])
 def challenge_status(challenge_id):
     ch = challenges.get(challenge_id)
@@ -96,13 +76,11 @@ def challenge_status(challenge_id):
         return jsonify({"ok": False, "error": "not found"}), 404
     return jsonify({"ok": True, "challenge": ch})
 
-
 def fetch_thingspeak_latest():
     params = {'results': THINGSPEAK_RESULTS, 'api_key': THINGSPEAK_READ_KEY}
     r = requests.get(TS_CHANNEL_FEEDS_URL, params=params, timeout=10)
     r.raise_for_status()
     return r.json()
-
 
 @app.route('/feeds/latest', methods=['GET'])
 def latest_decrypted_feed():
@@ -113,9 +91,9 @@ def latest_decrypted_feed():
     feeds = data.get('feeds', [])
     if not feeds:
         return jsonify({"error": "no feeds"}), 404
-
     feed = feeds[-1]
-    names = {'field1': 'Label1', 'field2': 'Temperature', 'field3': 'Humidity', 'field4': 'IR', 'field5': 'Label2'}
+
+    names = {'field1':'Label1','field2':'Temperature','field3':'Humidity','field4':'IR','field5':'Label2'}
     decrypted = {}
 
     for fkey, fname in names.items():
@@ -123,17 +101,13 @@ def latest_decrypted_feed():
         if not raw:
             decrypted[fname] = None
             continue
-
         cipher_b64, hmac_b64, ts, challenge_id = None, None, None, None
         if "::" in raw:
-            cipher_b64, suffix = raw.split("::", 1)
+            cipher_b64, suffix = raw.split("::",1)
             parts = suffix.split(":")
-            if len(parts) >= 3:
-                hmac_b64 = parts[0]
-                ts = parts[1]
-                challenge_id = parts[2]
-            else:
-                hmac_b64 = parts[0] if parts else None
+            if len(parts)>=3:
+                hmac_b64 = parts[0]; ts=parts[1]; challenge_id=parts[2]
+            else: hmac_b64=parts[0] if parts else None
         else:
             cipher_b64 = raw
 
@@ -144,45 +118,26 @@ def latest_decrypted_feed():
             if challenge_info:
                 challenge_token = challenge_info.get('token')
                 message = f"{fname}:{ts}:{challenge_token}"
-                if hmac_b64:
-                    hmac_ok = verify_hmac(hmac_b64, message, IBM_API_TOKEN)
-                else:
-                    hmac_ok = False
-            else:
-                hmac_ok = False
+                if hmac_b64: hmac_ok = verify_hmac(hmac_b64, message, IBM_API_TOKEN)
+                else: hmac_ok = False
+            else: hmac_ok=False
 
-        decrypted[fname] = {
-            "value": plaintext,
-            "hmac_valid": hmac_ok,
-            "challenge_id": challenge_id,
-            "challenge": challenge_info,
-        }
+        decrypted[fname] = {"value": plaintext, "hmac_valid": hmac_ok, "challenge_id": challenge_id, "challenge": challenge_info}
 
     return jsonify({"decrypted": decrypted, "_raw_feed": feed})
 
+# ---------------- STATIC FILE ROUTES ----------------
 
-# ---------------- FRONTEND STATIC ROUTES ----------------
+# Serve index.html at root
 @app.route('/')
 def serve_index():
-    """Serve the main frontend index file"""
     return send_from_directory(FRONTEND_FOLDER, 'index.html')
 
-
-@app.errorhandler(404)
-def not_found(e):
-    """
-    For SPA (React/Vue/Vanilla JS) routing, return index.html for any unknown path.
-    This fixes 404 when refreshing or directly accessing a route.
-    """
-    if os.path.exists(os.path.join(FRONTEND_FOLDER, 'index.html')):
-        return send_from_directory(FRONTEND_FOLDER, 'index.html')
-    else:
-        return jsonify({"error": "index.html not found"}), 404
-
+# Serve other frontend static files (.css, .js)
+@app.route('/<path:path>')
+def serve_static(path):
+    return send_from_directory(FRONTEND_FOLDER, path)
 
 # ---------------- MAIN ----------------
 if __name__ == '__main__':
-    print(f"✅ Frontend directory: {FRONTEND_FOLDER}")
-    if not os.path.exists(os.path.join(FRONTEND_FOLDER, 'index.html')):
-        print("⚠️  Warning: index.html not found in frontend folder.")
     app.run(host='0.0.0.0', port=5000, debug=True)
