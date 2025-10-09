@@ -1,4 +1,3 @@
-# backend/server.py
 import os, base64, json, threading, uuid, requests
 from flask import Flask, jsonify, request, abort, send_from_directory
 from binascii import unhexlify
@@ -6,15 +5,10 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from Crypto.Hash import HMAC, SHA256
 from config import *
-from db import (
-    init_db, insert_challenge, update_challenge_job,
-    set_challenge_result, set_challenge_failed, get_challenge
-)
 from ibm_runtime import submit_quantum_job, retrieve_job_result
 
-# Initialize Flask app and database
+# Initialize Flask app
 app = Flask(__name__, static_folder="../frontend", static_url_path="/")
-init_db()
 
 TS_CHANNEL_FEEDS_URL = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
 
@@ -40,29 +34,30 @@ def verify_hmac(hmac_b64: str, message: str, key: str) -> bool:
     except Exception:
         return False
 
-# ---------------- Quantum Job Runner ----------------
+# ---------------- Quantum Job Runner (Simulated) ----------------
+quantum_jobs = {}  # in-memory storage for challenge results
+
 def background_quantum_runner(challenge_id: str, job_obj):
     try:
         proof = retrieve_job_result(job_obj)
-        set_challenge_result(challenge_id, proof)
+        quantum_jobs[challenge_id] = {"status": "done", "proof": proof}
     except Exception as e:
-        set_challenge_failed(challenge_id, str(e))
+        quantum_jobs[challenge_id] = {"status": "failed", "error": str(e)}
 
 # ---------------- API: Quantum Challenge ----------------
 @app.route("/quantum/challenge", methods=["GET"])
 def create_challenge():
     challenge_id = str(uuid.uuid4())
     challenge_token = base64.urlsafe_b64encode(uuid.uuid4().bytes).decode("utf-8").rstrip("=")
-    insert_challenge(challenge_id, challenge_token)
+    quantum_jobs[challenge_id] = {"status": "pending", "token": challenge_token}
 
     try:
         job_info = submit_quantum_job()
-        job_id = job_info.get("job_id")
-        update_challenge_job(challenge_id, job_id)
         t = threading.Thread(target=background_quantum_runner, args=(challenge_id, job_info.get("internal_job")), daemon=True)
         t.start()
     except Exception as e:
-        set_challenge_failed(challenge_id, str(e))
+        quantum_jobs[challenge_id]["status"] = "failed"
+        quantum_jobs[challenge_id]["error"] = str(e)
         return jsonify({"ok": False, "error": "quantum submission failed", "detail": str(e)}), 500
 
     return jsonify({
@@ -74,7 +69,7 @@ def create_challenge():
 # ---------------- API: Quantum Challenge Status ----------------
 @app.route("/quantum/status/<challenge_id>", methods=["GET"])
 def challenge_status(challenge_id):
-    row = get_challenge(challenge_id)
+    row = quantum_jobs.get(challenge_id)
     if not row:
         return jsonify({"ok": False, "error": "not found"}), 404
     return jsonify({"ok": True, "challenge": row})
@@ -124,10 +119,11 @@ def latest_decrypted_feed():
             cipher_b64 = raw
 
         plaintext = aes_decrypt_base64(cipher_b64, SERVER_AES_KEY_HEX, AES_IV_HEX)
-        hmac_ok, challenge_info = None, None
+        hmac_ok = None
+        challenge_info = None
 
         if challenge_id:
-            challenge_info = get_challenge(challenge_id)
+            challenge_info = quantum_jobs.get(challenge_id)
             if challenge_info:
                 challenge_token = challenge_info.get("token")
                 message = f"{fname}:{ts}:{challenge_token}"
