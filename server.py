@@ -1,81 +1,162 @@
-# server.py
-from flask import Flask, jsonify, send_from_directory
-import requests
-from base64 import b64encode, b64decode
+# backend/server.py
+import os, base64, json, threading, uuid, requests
+from flask import Flask, jsonify, request, abort, send_from_directory
+from binascii import unhexlify
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-import binascii
-import config
-from quantum_key import get_quantum_tag
-import hashlib
-import hmac
+from Crypto.Hash import HMAC, SHA256
+from config import *
+from db import (
+    init_db, insert_challenge, update_challenge_job,
+    set_challenge_result, set_challenge_failed, get_challenge
+)
+from ibm_runtime import submit_quantum_job, retrieve_job_result
 
+# Initialize Flask app and database
 app = Flask(__name__, static_folder="../frontend", static_url_path="/")
+init_db()
 
-THINGSPEAK_FEEDS_URL = f"https://api.thingspeak.com/channels/{config.THINGSPEAK_CHANNEL_ID}/feeds.json?results=5"
+TS_CHANNEL_FEEDS_URL = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
 
-def hex_to_bytes(h: str) -> bytes:
-    return binascii.unhexlify(h)
-
-AES_KEY = hex_to_bytes(config.SERVER_AES_KEY_HEX)
-
-def verify_and_decrypt_field(field_value: str):
-    """
-    Expect field_value format: base64(iv + ciphertext) | base64(hmac_tag)
-    Returns decrypted string on success, or an error message.
-    """
+# ---------------- AES Decrypt Helper ----------------
+def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
     try:
-        if "|" not in field_value:
-            return {"ok": False, "error": "invalid_format"}
-        part_enc, part_tag = field_value.split("|", 1)
-        enc = b64decode(part_enc)
-        tag = b64decode(part_tag)
-        # split iv (16) + ciphertext
-        iv = enc[:16]
-        ciphertext = enc[16:]
-        # verify quantum tag: recompute the same algorithm used on device
-        # here we call get_quantum_tag to generate expected tag (it uses HMAC of ciphertext and token)
-        expected_tag_b64 = get_quantum_tag(config.IBM_API_TOKEN, ciphertext, length=len(tag), use_ibm=config.USE_IBM_QUANTUM)
-        expected_tag = b64decode(expected_tag_b64)
-        if not hmac.compare_digest(expected_tag, tag):
-            return {"ok": False, "error": "tag_mismatch"}
-        # decrypt AES-128-CBC
-        cipher = AES.new(AES_KEY, AES.MODE_CBC, iv)
-        plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)
-        return {"ok": True, "value": plaintext.decode('utf-8')}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+        data = base64.b64decode(cipher_b64)
+        key = unhexlify(key_hex)
+        iv = unhexlify(iv_hex)
+        cipher = AES.new(key, AES.MODE_CBC, iv)
+        pt = unpad(cipher.decrypt(data), AES.block_size)
+        return pt.decode("utf-8")
+    except Exception:
+        return None
 
-@app.route("/api/latest")
-def api_latest():
-    resp = requests.get(THINGSPEAK_FEEDS_URL, params={"api_key": config.THINGSPEAK_READ_KEY})
-    if resp.status_code != 200:
-        return jsonify({"ok": False, "error": "thingspeak_fetch_failed", "status": resp.status_code}), 500
-    data = resp.json()
+# ---------------- HMAC Verify Helper ----------------
+def verify_hmac(hmac_b64: str, message: str, key: str) -> bool:
+    try:
+        expected = HMAC.new(key.encode("utf-8"), digestmod=SHA256)
+        expected.update(message.encode("utf-8"))
+        exp_b = base64.urlsafe_b64encode(expected.digest()).decode("utf-8").rstrip("=")
+        return hmac_b64 == exp_b
+    except Exception:
+        return False
+
+# ---------------- Quantum Job Runner ----------------
+def background_quantum_runner(challenge_id: str, job_obj):
+    try:
+        proof = retrieve_job_result(job_obj)
+        set_challenge_result(challenge_id, proof)
+    except Exception as e:
+        set_challenge_failed(challenge_id, str(e))
+
+# ---------------- API: Quantum Challenge ----------------
+@app.route("/quantum/challenge", methods=["GET"])
+def create_challenge():
+    challenge_id = str(uuid.uuid4())
+    challenge_token = base64.urlsafe_b64encode(uuid.uuid4().bytes).decode("utf-8").rstrip("=")
+    insert_challenge(challenge_id, challenge_token)
+
+    try:
+        job_info = submit_quantum_job()
+        job_id = job_info.get("job_id")
+        update_challenge_job(challenge_id, job_id)
+        t = threading.Thread(target=background_quantum_runner, args=(challenge_id, job_info.get("internal_job")), daemon=True)
+        t.start()
+    except Exception as e:
+        set_challenge_failed(challenge_id, str(e))
+        return jsonify({"ok": False, "error": "quantum submission failed", "detail": str(e)}), 500
+
+    return jsonify({
+        "ok": True,
+        "challenge_id": challenge_id,
+        "challenge_token": challenge_token
+    })
+
+# ---------------- API: Quantum Challenge Status ----------------
+@app.route("/quantum/status/<challenge_id>", methods=["GET"])
+def challenge_status(challenge_id):
+    row = get_challenge(challenge_id)
+    if not row:
+        return jsonify({"ok": False, "error": "not found"}), 404
+    return jsonify({"ok": True, "challenge": row})
+
+# ---------------- Helper: Fetch ThingSpeak ----------------
+def fetch_thingspeak_latest():
+    params = {"results": 1, "api_key": THINGSPEAK_READ_KEY}
+    r = requests.get(TS_CHANNEL_FEEDS_URL, params=params, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+# ---------------- API: Latest Decrypted Feed ----------------
+@app.route("/feeds/latest", methods=["GET"])
+def latest_decrypted_feed():
+    token = request.args.get("auth")
+    if token and token != ESP_AUTH_TOKEN:
+        abort(401)
+
+    data = fetch_thingspeak_latest()
     feeds = data.get("feeds", [])
     if not feeds:
-        return jsonify({"ok": True, "feeds": []})
-    latest = feeds[-1]
-    # fields 1..5
-    decoded = {}
-    for i in range(1,6):
-        key = f"field{i}"
-        raw = latest.get(key)
-        if raw is None:
-            decoded[key] = {"ok": False, "error": "missing_field"}
-            continue
-        decoded[key] = verify_and_decrypt_field(raw)
-    # Also include feed created_at, entry_id
-    return jsonify({"ok": True, "entry_id": latest.get("entry_id"), "created_at": latest.get("created_at"), "decoded": decoded})
+        return jsonify({"error": "no feeds"}), 404
+    feed = feeds[-1]
 
-# Serve frontend files
+    names = {
+        "field1": "Label1",
+        "field2": "Temperature",
+        "field3": "Humidity",
+        "field4": "IR",
+        "field5": "Label2"
+    }
+
+    decrypted = {}
+    for fkey, fname in names.items():
+        raw = feed.get(fkey)
+        if not raw:
+            decrypted[fname] = None
+            continue
+
+        cipher_b64, hmac_b64, ts, challenge_id = None, None, None, None
+        if "::" in raw:
+            cipher_b64, suffix = raw.split("::", 1)
+            parts = suffix.split(":")
+            if len(parts) >= 3:
+                hmac_b64, ts, challenge_id = parts[:3]
+        else:
+            cipher_b64 = raw
+
+        plaintext = aes_decrypt_base64(cipher_b64, SERVER_AES_KEY_HEX, AES_IV_HEX)
+        hmac_ok, challenge_info = None, None
+
+        if challenge_id:
+            challenge_info = get_challenge(challenge_id)
+            if challenge_info:
+                challenge_token = challenge_info.get("token")
+                message = f"{fname}:{ts}:{challenge_token}"
+                hmac_ok = verify_hmac(hmac_b64, message, IBM_API_TOKEN)
+            else:
+                hmac_ok = False
+
+        decrypted[fname] = {
+            "value": plaintext,
+            "hmac_valid": hmac_ok,
+            "challenge_id": challenge_id,
+            "challenge": challenge_info
+        }
+
+    return jsonify({"decrypted": decrypted, "_raw_feed": feed})
+
+# ---------------- Serve Frontend (Render Deployment) ----------------
 @app.route("/")
-def index():
+def serve_index():
     return send_from_directory(app.static_folder, "index.html")
 
-@app.route("/<path:p>")
-def static_proxy(p):
-    return send_from_directory(app.static_folder, p)
+@app.route("/<path:path>")
+def serve_static(path):
+    file_path = os.path.join(app.static_folder, path)
+    if os.path.isfile(file_path):
+        return send_from_directory(app.static_folder, path)
+    return send_from_directory(app.static_folder, "index.html")
 
+# ---------------- Main ----------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
