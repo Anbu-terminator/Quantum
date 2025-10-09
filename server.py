@@ -3,23 +3,19 @@ import requests, base64, json, uuid, os
 from binascii import unhexlify
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-from Crypto.Hash import HMAC, SHA256
 from config import *
 from quantum_key import get_quantum_challenge
 
-# --- Absolute path to frontend folder ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FRONTEND_FOLDER = os.path.join(BASE_DIR, "frontend")  # <-- make sure 'frontend' is inside backend
+FRONTEND_FOLDER = os.path.join(BASE_DIR, "frontend")
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
-# Store challenges
 challenges = {}
 
 # --- AES decrypt ---
 def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
     try:
-        # ensure proper padding for base64
         padding = '=' * (-len(cipher_b64) % 4)
         data = base64.urlsafe_b64decode(cipher_b64 + padding)
         key = unhexlify(key_hex)
@@ -30,16 +26,6 @@ def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
     except Exception as e:
         return f"error:{e}"
 
-# --- Verify HMAC ---
-def verify_hmac(hmac_b64: str, message: str, key: str) -> bool:
-    try:
-        h = HMAC.new(key.encode("utf-8"), digestmod=SHA256)
-        h.update(message.encode("utf-8"))
-        expected_b64 = base64.urlsafe_b64encode(h.digest()).decode("utf-8").rstrip("=")
-        return hmac_b64 == expected_b64
-    except:
-        return False
-
 # --- ThingSpeak fetch ---
 def fetch_thingspeak_latest():
     url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
@@ -49,8 +35,10 @@ def fetch_thingspeak_latest():
     return r.json()
 
 # --- API: Quantum Challenge ---
-@app.route("/quantum/challenge", methods=["GET"])
+@app.route("/api/challenge", methods=["GET"])
 def challenge():
+    if request.args.get("auth") != ESP_AUTH_TOKEN:
+        abort(401)
     cid = str(uuid.uuid4())
     token = get_quantum_challenge()
     challenges[cid] = {"token": token}
@@ -76,22 +64,15 @@ def api_latest():
             decrypted[fname] = None
             continue
 
-        cipher_b64, hmac_b64, ts, cid = None, None, None, None
         try:
-            cipher_b64, suffix = raw.split("::", 1)
-            parts = suffix.split(":")
-            if len(parts) >= 3:
-                hmac_b64, ts, cid = parts[0], parts[1], parts[2]
+            cipher_b64, cid, token = raw.split("::")
+            pt = aes_decrypt_base64(cipher_b64, SERVER_AES_KEY_HEX, AES_IV_HEX)
         except:
-            cipher_b64 = raw
+            pt = raw
+            cid = None
+            token = None
 
-        pt = aes_decrypt_base64(cipher_b64, SERVER_AES_KEY_HEX, AES_IV_HEX)
-        hmac_ok = None
-        if cid and cid in challenges:
-            token = challenges[cid]["token"]
-            msg = f"{fname}:{ts}:{token}"
-            hmac_ok = verify_hmac(hmac_b64, msg, IBM_API_TOKEN)
-        decrypted[fname] = {"value": pt, "hmac_valid": hmac_ok}
+        decrypted[fname] = {"value": pt, "challenge_id": cid, "challenge_token": token}
 
     return jsonify({"decrypted": decrypted})
 
