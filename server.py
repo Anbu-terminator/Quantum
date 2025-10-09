@@ -7,15 +7,21 @@ from Crypto.Hash import HMAC, SHA256
 from config import *
 from quantum_key import get_quantum_challenge
 
-# --- Config ---
-FRONTEND_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../frontend")
+# --- Absolute path to frontend folder ---
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FRONTEND_FOLDER = os.path.join(BASE_DIR, "frontend")  # <-- make sure 'frontend' is inside backend
+
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
+
+# Store challenges
 challenges = {}
 
 # --- AES decrypt ---
 def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
     try:
-        data = base64.urlsafe_b64decode(cipher_b64 + "==")
+        # ensure proper padding for base64
+        padding = '=' * (-len(cipher_b64) % 4)
+        data = base64.urlsafe_b64decode(cipher_b64 + padding)
         key = unhexlify(key_hex)
         iv = unhexlify(iv_hex)
         cipher = AES.new(key, AES.MODE_CBC, iv)
@@ -27,17 +33,17 @@ def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
 # --- Verify HMAC ---
 def verify_hmac(hmac_b64: str, message: str, key: str) -> bool:
     try:
-        expected = HMAC.new(key.encode("utf-8"), digestmod=SHA256)
-        expected.update(message.encode("utf-8"))
-        exp_b = base64.urlsafe_b64encode(expected.digest()).decode("utf-8").rstrip("=")
-        return hmac_b64 == exp_b
+        h = HMAC.new(key.encode("utf-8"), digestmod=SHA256)
+        h.update(message.encode("utf-8"))
+        expected_b64 = base64.urlsafe_b64encode(h.digest()).decode("utf-8").rstrip("=")
+        return hmac_b64 == expected_b64
     except:
         return False
 
 # --- ThingSpeak fetch ---
 def fetch_thingspeak_latest():
     url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
-    params = {"api_key": THINGSPEAK_READ_KEY, "results": THINGSPEAK_RESULTS}
+    params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
     r = requests.get(url, params=params, timeout=10)
     r.raise_for_status()
     return r.json()
@@ -90,13 +96,10 @@ def api_latest():
     return jsonify({"decrypted": decrypted})
 
 # --- Serve frontend ---
-@app.route("/")
-def index():
-    return send_from_directory(FRONTEND_FOLDER, "index.html")
-
+@app.route("/", defaults={"path": "index.html"})
 @app.route("/<path:path>")
-def static_proxy(path):
+def frontend(path):
     return send_from_directory(FRONTEND_FOLDER, path)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000)
