@@ -1,30 +1,50 @@
-async function loadLatest(){
-  try{
-    const r = await fetch('/api/latest');
-    const j = await r.json();
-    const rows = document.getElementById('rows');
-    rows.innerHTML = '';
-    document.getElementById('meta').innerText = `Entry: ${j.entry_id || '-'}  |  Time: ${j.created_at || '-'}`;
-    if(!j.ok){ rows.innerHTML = `<tr><td colspan="3">Error: ${j.error}</td></tr>`; return; }
-    const dec = j.decoded || {};
-    for(let i=1;i<=5;i++){
-      const key = 'field'+i;
-      const cell = dec[key];
-      let status = 'unknown';
-      let val = '';
-      if(!cell) { status='missing'; }
-      else if(cell.ok){
-        status = 'ok';
-        val = cell.value;
-      } else {
-        status = cell.error;
-      }
-      rows.innerHTML += `<tr><td>${key}</td><td>${val}</td><td class="${status==='ok' ? 'ok' : 'err'}">${status}</td></tr>`;
+const API = '/feeds/latest';
+
+async function fetchLatest() {
+  document.getElementById('status').textContent = "Fetching …";
+  try {
+    const res = await fetch(API);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const d = data.decrypted || {};
+
+    setField('temp', d.Temperature?.value);
+    setQ('qtemp', d.Temperature?.hmac_valid);
+
+    setField('hum', d.Humidity?.value);
+    setQ('qhum', d.Humidity?.hmac_valid);
+
+    setField('ir', d.IR?.value);
+    setQ('qir', d.IR?.hmac_valid);
+
+    setField('l1', d.Label1?.value);
+    setQ('ql1', d.Label1?.hmac_valid);
+
+    setField('l2', d.Label2?.value);
+    setQ('ql2', d.Label2?.hmac_valid);
+
+    document.getElementById('status').textContent = "Updated";
+
+    // show any attached challenge info for the first non-empty field
+    let any = d.Temperature || d.Humidity || d.IR || d.Label1 || d.Label2;
+    if (any && any.challenge) {
+      document.getElementById('qproof').textContent = JSON.stringify(any.challenge, null, 2);
+    } else {
+      document.getElementById('qproof').textContent = "No challenge info available";
     }
-  }catch(e){
-    document.getElementById('rows').innerHTML = `<tr><td colspan="3">Fetch error: ${e.toString()}</td></tr>`;
+
+  } catch (err) {
+    document.getElementById('status').textContent = "Error fetching";
+    console.error(err);
   }
 }
 
-loadLatest();
-setInterval(loadLatest, 15_000); // refresh every 15s
+function setField(id, v) {
+  document.getElementById(id).textContent = v != null ? v : '—';
+}
+function setQ(id, ok) {
+  document.getElementById(id).textContent = ok === null || ok === undefined ? '' : (ok ? '✓' : '✗');
+}
+
+fetchLatest();
+setInterval(fetchLatest, 30000);
