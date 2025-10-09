@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, send_from_directory, request, abort
-import requests, base64, uuid, os
+import requests, base64, json, uuid, os
 from binascii import unhexlify
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
@@ -26,18 +26,13 @@ def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
     except Exception as e:
         return f"error:{e}"
 
-# --- ThingSpeak fetch (latest feed only) ---
+# --- ThingSpeak fetch ---
 def fetch_thingspeak_latest():
-    try:
-        url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
-        params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
-        r = requests.get(url, params=params, timeout=10)
-        r.raise_for_status()
-        feeds = r.json().get("feeds", [])
-        return feeds[-1] if feeds else None
-    except Exception as e:
-        print("ThingSpeak fetch error:", e)
-        return None
+    url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
+    params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
+    r = requests.get(url, params=params, timeout=10)
+    r.raise_for_status()
+    return r.json()
 
 # --- API: Quantum Challenge ---
 @app.route("/api/challenge", methods=["GET"])
@@ -54,42 +49,33 @@ def challenge():
 def api_latest():
     if request.args.get("auth") != ESP_AUTH_TOKEN:
         abort(401)
-    
-    feed = fetch_thingspeak_latest()
-    if not feed:
-        return jsonify({"error": "no feeds available"}), 404
+    data = fetch_thingspeak_latest()
+    feeds = data.get("feeds", [])
+    if not feeds:
+        return jsonify({"error": "no feeds"}), 404
+    feed = feeds[-1]
 
-    fields = {
-        'field1': 'Label1',
-        'field2': 'Temperature',
-        'field3': 'Humidity',
-        'field4': 'IR',
-        'field5': 'Label2'
-    }
-
+    fields = {'field1': 'Label1', 'field2': 'Temperature', 'field3': 'Humidity', 'field4': 'IR', 'field5': 'Label2'}
     decrypted = {}
 
     for fkey, fname in fields.items():
         raw = feed.get(fkey)
         if not raw:
-            decrypted[fname] = {"value": None, "challenge_id": "N/A", "challenge_token": "N/A"}
+            decrypted[fname] = None
             continue
 
-        try:
-            # Split into cipher, cid, token (from ESP payload)
-            cipher_b64, cid, token = raw.split("::")
-            pt = aes_decrypt_base64(cipher_b64, SERVER_AES_KEY_HEX, AES_IV_HEX)
-            # If ESP also appended cid::token inside plaintext, remove it
-            if "::" in pt:
-                pt = pt.split("::")[0]  # real sensor value only
-        except Exception as e:
-            pt = raw
-            cid = "N/A"
-            token = "N/A"
+        # Decrypt first
+        pt = aes_decrypt_base64(raw, SERVER_AES_KEY_HEX, AES_IV_HEX)
+
+        # Then split into value::challenge_id::challenge_token
+        parts = pt.split("::")
+        value = parts[0] if len(parts) > 0 else None
+        challenge_id = parts[1] if len(parts) > 1 else None
+        token = parts[2] if len(parts) > 2 else None
 
         decrypted[fname] = {
-            "value": pt,
-            "challenge_id": cid,
+            "value": value,
+            "challenge_id": challenge_id,
             "challenge_token": token
         }
 
