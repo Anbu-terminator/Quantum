@@ -16,3 +16,5 @@ ESP_AUTH_TOKEN = "6772698c38270a210fabf1133fc6ad00"
 
 # How many results to request from ThingSpeak
 THINGSPEAK_RESULTS = 1
+IBM_Q_BACKEND = "ibmq_qasm_simulator"
+IBM_Q_SHOTS = 256
