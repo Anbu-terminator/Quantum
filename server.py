@@ -1,189 +1,164 @@
 # backend/server.py
 from flask import Flask, jsonify, request, abort, send_from_directory
-import os
-import requests
-import base64
-import hmac
-import hashlib
+import os, base64, uuid, threading, requests
 from binascii import unhexlify
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
+from Crypto.Hash import HMAC, SHA256
 from config import *
+from quantum_key import generate_quantum_key  # ✅ new import for /api/quantum_key
+from ibm_runtime import submit_quantum_job, retrieve_job_result
 
-# Frontend folder (relative to backend.py)
+# --- Folder configuration ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FRONTEND_FOLDER = os.path.normpath(os.path.join(BASE_DIR, "../frontend"))
+FRONTEND_FOLDER = os.path.join(BASE_DIR, "../frontend")
 
-app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
+app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="/")
 
-# In-memory store for challenges issued to devices:
-# key: challenge_id -> { "token": <challenge_token>, "status": "pending" | "done" | "failed", "meta": {...} }
+# --- In-memory store for challenges ---
 challenges = {}
 
-# ThingSpeak feeds URL
+# --- ThingSpeak API ---
 TS_CHANNEL_FEEDS_URL = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
 
-# ---------------- AES decrypt helper ----------------
-def aes_decrypt_base64(cipher_b64: str) -> str:
-    if not cipher_b64:
-        return None
+
+# ==============================================================
+#  UTILITY FUNCTIONS
+# ==============================================================
+
+def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
     try:
-        # base64 decode (standard base64 from ESP output)
-        ct = base64.b64decode(cipher_b64)
-        key = unhexlify(SERVER_AES_KEY_HEX)
-        iv = unhexlify(AES_IV_HEX)
+        data = base64.b64decode(cipher_b64)
+        key = unhexlify(key_hex)
+        iv = unhexlify(iv_hex)
         cipher = AES.new(key, AES.MODE_CBC, iv)
-        pt = unpad(cipher.decrypt(ct), AES.block_size)
+        pt = unpad(cipher.decrypt(data), AES.block_size)
         return pt.decode("utf-8")
     except Exception as e:
-        # decryption failed
-        print("AES decrypt error:", e)
+        print("Decryption error:", e)
         return None
 
-# ---------------- HMAC verify helper ----------------
-def verify_hmac_b64(hmac_b64: str, message: str, key: str) -> bool:
-    """
-    Compare provided urlsafe base64(no padding) HMAC against computed HMAC-SHA256(key, message).
-    Device uses urlsafe base64 (replace +/ with -_ and trimmed '=').
-    """
-    if hmac_b64 is None:
-        return False
+
+def verify_hmac(hmac_b64: str, message: str, key: str) -> bool:
     try:
-        # compute HMAC-SHA256
-        hm = hmac.new(key.encode('utf-8'), msg=message.encode('utf-8'), digestmod=hashlib.sha256).digest()
-        # urlsafe base64 encode without '=' padding
-        expected = base64.urlsafe_b64encode(hm).decode('utf-8').rstrip('=')
-        return hmac.compare_digest(expected, hmac_b64)
-    except Exception as e:
-        print("HMAC verify error:", e)
+        expected = HMAC.new(key.encode("utf-8"), digestmod=SHA256)
+        expected.update(message.encode("utf-8"))
+        exp_b = base64.urlsafe_b64encode(expected.digest()).decode("utf-8").rstrip("=")
+        return hmac_b64 == exp_b
+    except:
         return False
 
-# ---------------- Quantum challenge endpoint ----------------
+
+def background_quantum_runner(challenge_id: str, job_obj):
+    try:
+        proof = retrieve_job_result(job_obj)
+        challenges[challenge_id]["proof"] = proof
+        challenges[challenge_id]["status"] = "done"
+    except Exception as e:
+        challenges[challenge_id]["status"] = "failed"
+        challenges[challenge_id]["proof"] = {"error": str(e)}
+
+
+# ==============================================================
+#  API ROUTES
+# ==============================================================
+
 @app.route("/quantum/challenge", methods=["GET"])
-def quantum_challenge():
-    """
-    Device calls this to get a fresh challenge token and ID.
-    Returned JSON: { ok: True, challenge_id: "...", challenge_token: "..." }
-    The token is stored in-memory so backend can verify HMACs later.
-    """
-    # create random id + token (URL-safe base64)
-    challenge_id = base64.urlsafe_b64encode(os.urandom(9)).decode('utf-8').rstrip('=')
-    challenge_token = base64.urlsafe_b64encode(os.urandom(24)).decode('utf-8').rstrip('=')
+def create_challenge():
+    """Creates a new quantum challenge token"""
+    challenge_id = str(uuid.uuid4())
+    challenge_token = base64.urlsafe_b64encode(uuid.uuid4().bytes).decode("utf-8").rstrip("=")
     challenges[challenge_id] = {"token": challenge_token, "status": "pending"}
+
+    try:
+        job_info = submit_quantum_job()
+        challenges[challenge_id]["job_id"] = job_info.get("job_id")
+        t = threading.Thread(
+            target=background_quantum_runner,
+            args=(challenge_id, job_info.get("internal_job")),
+            daemon=True,
+        )
+        t.start()
+    except Exception as e:
+        challenges[challenge_id]["status"] = "failed"
+        challenges[challenge_id]["error"] = str(e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
     return jsonify({"ok": True, "challenge_id": challenge_id, "challenge_token": challenge_token})
 
+
 @app.route("/quantum/status/<challenge_id>", methods=["GET"])
-def quantum_status(challenge_id):
+def challenge_status(challenge_id):
     ch = challenges.get(challenge_id)
     if not ch:
         return jsonify({"ok": False, "error": "not found"}), 404
     return jsonify({"ok": True, "challenge": ch})
 
-# ---------------- ThingSpeak fetch + decrypt + verify ----------------
+
+@app.route("/api/quantum_key", methods=["GET"])
+def get_quantum_key():
+    """✅ New endpoint for ESP8266 — generates and returns quantum key"""
+    token = request.args.get("auth")
+    if token != ESP_AUTH_TOKEN:
+        abort(401)
+    key_data = generate_quantum_key()
+    return jsonify({"ok": True, "key": key_data})
+
+
 @app.route("/feeds/latest", methods=["GET"])
-def feeds_latest():
-    """
-    Fetch the latest feed from ThingSpeak, decrypt each field and verify HMAC (if attached).
-    Returns JSON structure listing decrypted values and hmac check results.
-    Field format expected from ESP:
-      fieldN = "<cipher_b64>::<hmac_b64>:<timestamp>:<challenge_id>"
-    """
-    # optional token protection (frontend/device may pass ?auth=ESP_AUTH_TOKEN)
+def latest_decrypted_feed():
+    """Fetch and decrypt latest ThingSpeak feed"""
     token = request.args.get("auth")
     if token and token != ESP_AUTH_TOKEN:
-        return jsonify({"error": "Unauthorized"}), 401
+        abort(401)
 
-    params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
-    try:
-        r = requests.get(TS_CHANNEL_FEEDS_URL, params=params, timeout=10)
-        r.raise_for_status()
-    except Exception as e:
-        return jsonify({"error": "ThingSpeak fetch failed", "detail": str(e)}), 502
-
-    obj = r.json()
-    feeds = obj.get("feeds", [])
+    params = {"results": THINGSPEAK_RESULTS, "api_key": THINGSPEAK_READ_KEY}
+    r = requests.get(TS_CHANNEL_FEEDS_URL, params=params, timeout=10)
+    r.raise_for_status()
+    feeds = r.json().get("feeds", [])
     if not feeds:
         return jsonify({"error": "no feeds"}), 404
+    feed = feeds[-1]
 
-    feed = feeds[-1]  # latest
+    names = {"field1": "Label1", "field2": "Temperature", "field3": "Humidity", "field4": "IR"}
+    decrypted = {}
 
-    # friendly names
-    mapping = {
-        "field1": "Label1",
-        "field2": "Temperature",
-        "field3": "Humidity",
-        "field4": "IR",
-        "field5": "Label2"
-    }
-
-    result = {}
-    for fkey, fname in mapping.items():
+    for fkey, fname in names.items():
         raw = feed.get(fkey)
         if not raw:
-            result[fname] = {"value": None, "hmac_ok": None, "note": "empty"}
+            decrypted[fname] = None
             continue
 
-        # split payload
-        cipher_b64 = None
-        hmac_b64 = None
-        ts = None
-        challenge_id = None
+        cipher_b64 = raw.split("::")[0] if "::" in raw else raw
+        plaintext = aes_decrypt_base64(cipher_b64, SERVER_AES_KEY_HEX, AES_IV_HEX)
+        decrypted[fname] = plaintext
 
-        if "::" in raw:
-            cipher_b64, suffix = raw.split("::", 1)
-            # suffix expected "hmac_b64:timestamp:challenge_id"
-            parts = suffix.split(":")
-            if len(parts) >= 3:
-                hmac_b64 = parts[0]
-                ts = parts[1]
-                challenge_id = parts[2]
-            else:
-                # fallback: treat entire suffix as hmac (older formats)
-                hmac_b64 = parts[0] if parts else None
-        else:
-            cipher_b64 = raw
+    return jsonify({"decrypted": decrypted, "raw_feed": feed})
 
-        # decrypt ciphertext
-        plaintext = aes_decrypt_base64(cipher_b64)
 
-        # verify HMAC if challenge_id present
-        hmac_ok = None
-        challenge_info = None
-        if challenge_id:
-            challenge_info = challenges.get(challenge_id)
-            if challenge_info:
-                challenge_token = challenge_info.get("token")
-                # message used by device for HMAC: "<FieldLabel>:<timestamp>:<challenge_token>"
-                message = f"{fname}:{ts}:{challenge_token}"
-                hmac_ok = verify_hmac_b64(hmac_b64, message, IBM_API_TOKEN)
-            else:
-                hmac_ok = False
+# ==============================================================
+#  FRONTEND ROUTES
+# ==============================================================
 
-        result[fname] = {
-            "value": plaintext,
-            "hmac_ok": hmac_ok,
-            "hmac": hmac_b64,
-            "timestamp": ts,
-            "challenge_id": challenge_id,
-            "challenge": challenge_info
-        }
-
-    # include raw feed for debugging if needed
-    return jsonify({"decrypted": result, "_raw_feed": feed})
-
-# ---------------- frontend static serve (SPA friendly) ----------------
-@app.route("/", defaults={"path": ""})
-@app.route("/<path:path>")
-def serve_frontend(path):
-    # Serve files from frontend folder; fallback to index.html for SPA routes
-    if path != "" and os.path.exists(os.path.join(FRONTEND_FOLDER, path)):
-        return send_from_directory(FRONTEND_FOLDER, path)
+@app.route("/")
+def serve_index():
     index_path = os.path.join(FRONTEND_FOLDER, "index.html")
     if os.path.exists(index_path):
         return send_from_directory(FRONTEND_FOLDER, "index.html")
     return jsonify({"error": "index.html not found"}), 404
 
-# ---------------- run ----------------
+
+@app.route("/<path:path>")
+def serve_static(path):
+    full_path = os.path.join(FRONTEND_FOLDER, path)
+    if os.path.exists(full_path):
+        return send_from_directory(FRONTEND_FOLDER, path)
+    return jsonify({"error": f"{path} not found"}), 404
+
+
+# ==============================================================
+#  MAIN
+# ==============================================================
+
 if __name__ == "__main__":
-    print("Frontend folder:", FRONTEND_FOLDER)
     app.run(host="0.0.0.0", port=5000, debug=True)
