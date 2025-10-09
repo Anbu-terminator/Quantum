@@ -26,13 +26,22 @@ def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
     except Exception as e:
         return f"error:{e}"
 
-# --- ThingSpeak fetch ---
+# --- ThingSpeak fetch (latest feed only) ---
 def fetch_thingspeak_latest():
-    url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
-    params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
-    r = requests.get(url, params=params, timeout=10)
-    r.raise_for_status()
-    return r.json()
+    try:
+        url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
+        params = {
+            "api_key": THINGSPEAK_READ_KEY,
+            "results": 1  # fetch only the latest feed
+        }
+        r = requests.get(url, params=params, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        feeds = data.get("feeds", [])
+        return feeds[-1] if feeds else None
+    except Exception as e:
+        print("Error fetching ThingSpeak:", e)
+        return None
 
 # --- API: Quantum Challenge ---
 @app.route("/api/challenge", methods=["GET"])
@@ -49,33 +58,39 @@ def challenge():
 def api_latest():
     if request.args.get("auth") != ESP_AUTH_TOKEN:
         abort(401)
-    data = fetch_thingspeak_latest()
-    feeds = data.get("feeds", [])
-    if not feeds:
-        return jsonify({"error": "no feeds"}), 404
-    feed = feeds[-1]
+    
+    feed = fetch_thingspeak_latest()
+    if not feed:
+        return jsonify({"error": "no feeds available"}), 404
 
-    fields = {'field1': 'Label1', 'field2': 'Temperature', 'field3': 'Humidity', 'field4': 'IR', 'field5': 'Label2'}
+    fields = {
+        'field1': 'Label1',
+        'field2': 'Temperature',
+        'field3': 'Humidity',
+        'field4': 'IR',
+        'field5': 'Label2'
+    }
+
     decrypted = {}
 
     for fkey, fname in fields.items():
         raw = feed.get(fkey)
         if not raw:
-            decrypted[fname] = None
+            decrypted[fname] = {"value": None, "challenge_id": "N/A", "challenge_token": "N/A"}
             continue
 
-        # Decrypt first
-        pt = aes_decrypt_base64(raw, SERVER_AES_KEY_HEX, AES_IV_HEX)
-
-        # Then split into value::challenge_id::challenge_token
-        parts = pt.split("::")
-        value = parts[0] if len(parts) > 0 else None
-        challenge_id = parts[1] if len(parts) > 1 else None
-        token = parts[2] if len(parts) > 2 else None
+        # Split the value into AES part, challenge ID, and token
+        try:
+            cipher_b64, cid, token = raw.split("::")
+            pt = aes_decrypt_base64(cipher_b64, SERVER_AES_KEY_HEX, AES_IV_HEX)
+        except Exception as e:
+            pt = raw
+            cid = "N/A"
+            token = "N/A"
 
         decrypted[fname] = {
-            "value": value,
-            "challenge_id": challenge_id,
+            "value": pt,
+            "challenge_id": cid,
             "challenge_token": token
         }
 
