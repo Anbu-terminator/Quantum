@@ -1,6 +1,5 @@
-// Use your actual ESP auth token 
-const ESP_AUTH_TOKEN = "6772698c38270a210fabf1133fc6ad00";
-const API_BASE = "/api/latest";
+// Use your actual ESP auth token
+const API_URL = "/api/latest?auth=6772698c38270a210fabf1133fc6ad00";
 
 const dataDiv = document.getElementById("data");
 const btn = document.getElementById("refreshBtn");
@@ -8,15 +7,11 @@ const btn = document.getElementById("refreshBtn");
 async function fetchData() {
   dataDiv.innerHTML = "Loading...";
   try {
-    // Add a timestamp to prevent caching
-    const url = `${API_BASE}?auth=${ESP_AUTH_TOKEN}&t=${Date.now()}`;
-    const res = await fetch(url, { cache: "no-store" });
-
+    const res = await fetch(API_URL);
     if (res.status === 401) {
       dataDiv.innerHTML = "Unauthorized! Check ESP_AUTH_TOKEN.";
       return;
     }
-
     const json = await res.json();
     const data = json.decrypted;
     dataDiv.innerHTML = "";
@@ -25,11 +20,9 @@ async function fetchData() {
       const c = document.createElement("div");
       c.className = "card";
 
-      // Decrypted value may still contain ::challenge info
-      let valueParts = (val.value || "").split("::");
-      let value = valueParts[0];
-      let challenge_id = val.challenge_id || valueParts[1] || "N/A";
-      let challenge_token = val.challenge_token || valueParts[2] || "N/A";
+      let value = val.value || "N/A";
+      let challenge_id = val.challenge_id || "N/A";
+      let challenge_token = val.challenge_token || "N/A";
 
       c.innerHTML = `
         <h3>${key}</h3>
@@ -47,5 +40,5 @@ async function fetchData() {
 // Refresh button
 btn.addEventListener("click", fetchData);
 
-// Fetch latest on page load
+// Fetch automatically on page load
 window.onload = fetchData;
