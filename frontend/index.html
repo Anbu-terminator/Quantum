@@ -1,27 +1,14 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8">
   <title>Q-SENSE Dashboard</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main>
-    <h1>Q-SENSE — Live</h1>
-    <div id="status">Loading...</div>
-    <div class="grid">
-      <div class="card"><h2>Device</h2><div id="Label1">—</div><div class="meta" id="mLabel1"></div></div>
-      <div class="card"><h2>Temperature</h2><div id="Temperature">—</div><div class="meta" id="mTemperature"></div></div>
-      <div class="card"><h2>Humidity</h2><div id="Humidity">—</div><div class="meta" id="mHumidity"></div></div>
-      <div class="card"><h2>IR</h2><div id="IR">—</div><div class="meta" id="mIR"></div></div>
-      <div class="card"><h2>Location</h2><div id="Label2">—</div><div class="meta" id="mLabel2"></div></div>
-    </div>
-    <section class="proof">
-      <h3>Last Raw Feed (debug)</h3>
-      <pre id="raw">—</pre>
-    </section>
-  </main>
+  <h1>🔐 Q-SENSE – Decrypted Sensor Data</h1>
+  <div id="data"></div>
+  <button id="refreshBtn">🔄 Refresh</button>
   <script src="script.js"></script>
 </body>
 </html>
