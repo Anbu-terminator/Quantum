@@ -1,5 +1,5 @@
 # backend/server.py
-from flask import Flask, jsonify, request, abort
+from flask import Flask, jsonify, request, abort, send_from_directory
 import requests, base64, json, threading, uuid
 from binascii import unhexlify
 from Crypto.Cipher import AES
@@ -7,8 +7,12 @@ from Crypto.Util.Padding import unpad
 from Crypto.Hash import HMAC, SHA256
 from config import *
 from ibm_runtime import submit_quantum_job, retrieve_job_result
+import os
 
-app = Flask(__name__)
+# Set the frontend folder
+FRONTEND_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../frontend")
+
+app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
 # In-memory challenges storage
 challenges = {}
@@ -43,6 +47,8 @@ def background_quantum_runner(challenge_id: str, job_obj):
     except Exception as e:
         challenges[challenge_id]["status"] = "failed"
         challenges[challenge_id]["proof"] = {"error": str(e)}
+
+# ---------------- API ROUTES ----------------
 
 @app.route('/quantum/challenge', methods=['GET'])
 def create_challenge():
@@ -120,5 +126,18 @@ def latest_decrypted_feed():
 
     return jsonify({"decrypted": decrypted, "_raw_feed": feed})
 
+# ---------------- STATIC FILE ROUTES ----------------
+
+# Serve index.html at root
+@app.route('/')
+def serve_index():
+    return send_from_directory(FRONTEND_FOLDER, 'index.html')
+
+# Serve other frontend static files (.css, .js)
+@app.route('/<path:path>')
+def serve_static(path):
+    return send_from_directory(FRONTEND_FOLDER, path)
+
+# ---------------- MAIN ----------------
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
