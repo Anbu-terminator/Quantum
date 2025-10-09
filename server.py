@@ -60,19 +60,24 @@ def api_latest():
 
     for fkey, fname in fields.items():
         raw = feed.get(fkey)
-        if not raw: 
+        if not raw:
             decrypted[fname] = None
             continue
 
-        try:
-            cipher_b64, cid, token = raw.split("::")
-            pt = aes_decrypt_base64(cipher_b64, SERVER_AES_KEY_HEX, AES_IV_HEX)
-        except:
-            pt = raw
-            cid = None
-            token = None
+        # Decrypt first
+        pt = aes_decrypt_base64(raw, SERVER_AES_KEY_HEX, AES_IV_HEX)
 
-        decrypted[fname] = {"value": pt, "challenge_id": cid, "challenge_token": token}
+        # Then split into value::challenge_id::challenge_token
+        parts = pt.split("::")
+        value = parts[0] if len(parts) > 0 else None
+        challenge_id = parts[1] if len(parts) > 1 else None
+        token = parts[2] if len(parts) > 2 else None
+
+        decrypted[fname] = {
+            "value": value,
+            "challenge_id": challenge_id,
+            "challenge_token": token
+        }
 
     return jsonify({"decrypted": decrypted})
 
