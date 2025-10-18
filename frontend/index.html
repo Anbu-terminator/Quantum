@@ -1,34 +1,40 @@
-<!-- frontend/index.html -->
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Q-SENSE Dashboard</title>
-  <link rel="stylesheet" href="style.css" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Q-SENSE Dashboard</title>
+    <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main>
-    <h1>Q-SENSE Dashboard</h1>
-    <div id="raw-encrypted">
-      <h2>ThingSpeak (encrypted)</h2>
-      <pre id="ts-raw">Loading...</pre>
-    </div>
+    <header>
+        <h1>Q-SENSE Sensor Dashboard</h1>
+    </header>
 
-    <div id="decrypted">
-      <h2>Decrypted Values</h2>
-      <ul id="values">
-        <li>Field1: <span id="f1">—</span></li>
-        <li>Temperature: <span id="f2">—</span></li>
-        <li>Humidity: <span id="f3">—</span></li>
-        <li>IR Sensor: <span id="f4">—</span></li>
-        <li>MAX30100: <span id="f5">—</span></li>
-      </ul>
-    </div>
+    <main>
+        <div id="status">Connecting to backend...</div>
+        <table id="sensorTable">
+            <thead>
+                <tr>
+                    <th>Sensor</th>
+                    <th>Decrypted Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr><td>Quantum Key</td><td id="field1">--</td></tr>
+                <tr><td>Temperature</td><td id="field2">--</td></tr>
+                <tr><td>Humidity</td><td id="field3">--</td></tr>
+                <tr><td>IR Sensor</td><td id="field4">--</td></tr>
+                <tr><td>MAX30100</td><td id="field5">--</td></tr>
+            </tbody>
+        </table>
+        <div id="timestamp"></div>
+    </main>
 
-    <button id="refresh">Refresh Now</button>
-    <p id="status"></p>
-  </main>
-  <script src="script.js"></script>
+    <footer>
+        <p>Powered by Q-SENSE</p>
+    </footer>
+
+    <script src="script.js"></script>
 </body>
 </html>
