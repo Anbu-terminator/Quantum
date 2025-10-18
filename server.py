@@ -7,12 +7,14 @@ from Crypto.Util.Padding import unpad
 from config import *
 from quantum_key import get_quantum_challenge
 
+# --- Locate frontend folder robustly ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FRONTEND_FOLDER = os.path.join(BASE_DIR, "../frontend")
+FRONTEND_FOLDER = os.path.abspath(os.path.join(BASE_DIR, "frontend"))
+
+if not os.path.exists(FRONTEND_FOLDER):
+    FRONTEND_FOLDER = os.path.abspath(os.path.join(BASE_DIR, "frontend"))  # fallback
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
-
-challenges = {}
 
 # --- AES decrypt helper ---
 def aes_decrypt_hex(cipher_hex: str, key_hex: str) -> str:
@@ -29,7 +31,7 @@ def aes_decrypt_hex(cipher_hex: str, key_hex: str) -> str:
     except Exception as e:
         return f"error:{e}"
 
-# --- Fetch latest feed from ThingSpeak ---
+# --- Fetch latest ThingSpeak feed ---
 def fetch_thingspeak_latest():
     url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
     params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
@@ -85,19 +87,20 @@ def api_latest():
         "timestamp": latest.get("created_at")
     })
 
-# --- Serve frontend files ---
+# --- Serve frontend files properly ---
 @app.route("/", defaults={"path": "index.html"})
 @app.route("/<path:path>")
-def frontend(path):
+def serve_frontend(path):
     full_path = os.path.join(FRONTEND_FOLDER, path)
-    if not os.path.isfile(full_path):
-        path = "index.html"
+    if not os.path.exists(full_path):
+        path = "index.html"  # fallback to SPA root
     return send_from_directory(FRONTEND_FOLDER, path)
 
-# --- Main entry for deployment ---
+# --- Run App ---
 if __name__ == "__main__":
-    # Use environment PORT if provided, default to 5000 locally
     port = int(os.environ.get("PORT", 5000))
+    print(f"✅ Q-SENSE running at http://127.0.0.1:{port}")
+    print(f"📁 Serving frontend from: {FRONTEND_FOLDER}")
     app.run(
         host="0.0.0.0",
         port=port,
