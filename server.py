@@ -1,3 +1,4 @@
+# backend/server.py
 from flask import Flask, jsonify, send_from_directory, request, abort
 import requests, base64, json, uuid, os
 from binascii import unhexlify
@@ -7,26 +8,33 @@ from config import *
 from quantum_key import get_quantum_challenge
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FRONTEND_FOLDER = os.path.join(BASE_DIR, "frontend")
+FRONTEND_FOLDER = os.path.join(BASE_DIR, "../frontend")  # Adjusted for folder structure
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
 challenges = {}
 
-# --- AES decrypt ---
-def aes_decrypt_base64(cipher_b64: str, key_hex: str, iv_hex: str) -> str:
+# --- AES decrypt helper ---
+def aes_decrypt_hex(cipher_hex: str, key_hex: str) -> str:
+    """
+    Decrypts hex ciphertext of format 'iv:ciphertext' using AES-CBC and hex key.
+    """
     try:
-        padding = '=' * (-len(cipher_b64) % 4)
-        data = base64.urlsafe_b64decode(cipher_b64 + padding)
+        if ":" not in cipher_hex:
+            return "invalid_format"
+
+        iv_hex, ct_hex = cipher_hex.split(":")
         key = unhexlify(key_hex)
         iv = unhexlify(iv_hex)
+        ct = unhexlify(ct_hex)
+
         cipher = AES.new(key, AES.MODE_CBC, iv)
-        pt = unpad(cipher.decrypt(data), AES.block_size)
-        return pt.decode("utf-8")
+        pt = unpad(cipher.decrypt(ct), AES.block_size)
+        return pt.decode("utf-8", errors="ignore")
     except Exception as e:
         return f"error:{e}"
 
-# --- ThingSpeak fetch ---
+# --- Fetch latest feed from ThingSpeak ---
 def fetch_thingspeak_latest():
     url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
     params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
@@ -34,58 +42,73 @@ def fetch_thingspeak_latest():
     r.raise_for_status()
     return r.json()
 
-# --- API: Quantum Challenge ---
-@app.route("/api/challenge", methods=["GET"])
-def challenge():
-    if request.args.get("auth") != ESP_AUTH_TOKEN:
+# --- API: Quantum Key Generator (for ESP8266) ---
+@app.route("/quantum", methods=["GET"])
+def api_quantum():
+    token = request.args.get("token")
+    if token != ESP_AUTH_TOKEN:
         abort(401)
-    cid = str(uuid.uuid4())
-    token = get_quantum_challenge()
-    challenges[cid] = {"token": token}
-    return jsonify({"ok": True, "challenge_id": cid, "challenge_token": token})
+    n = int(request.args.get("n", 16))
+    q_hex = get_quantum_challenge(n)
+    return jsonify({"ok": True, "quantum_hex": q_hex})
 
-# --- API: Decrypt latest feed ---
+# --- API: Decrypt latest ThingSpeak feed ---
 @app.route("/api/latest", methods=["GET"])
 def api_latest():
     if request.args.get("auth") != ESP_AUTH_TOKEN:
         abort(401)
-    data = fetch_thingspeak_latest()
+    try:
+        data = fetch_thingspeak_latest()
+    except Exception as e:
+        return jsonify({"error": f"ThingSpeak fetch failed: {e}"}), 500
+
     feeds = data.get("feeds", [])
     if not feeds:
-        return jsonify({"error": "no feeds"}), 404
-    feed = feeds[-1]
+        return jsonify({"error": "No feed data"}), 404
 
-    fields = {'field1': 'Label1', 'field2': 'Temperature', 'field3': 'Humidity', 'field4': 'IR', 'field5': 'Label2'}
+    latest = feeds[-1]
+
+    fields = {
+        "field1": "Quantum Key",
+        "field2": "Temperature",
+        "field3": "Humidity",
+        "field4": "IR Sensor",
+        "field5": "MAX30100",
+    }
+
     decrypted = {}
 
-    for fkey, fname in fields.items():
-        raw = feed.get(fkey)
+    for fkey, label in fields.items():
+        raw = latest.get(fkey)
         if not raw:
-            decrypted[fname] = None
+            decrypted[label] = "None"
             continue
 
-        # Decrypt first
-        pt = aes_decrypt_base64(raw, SERVER_AES_KEY_HEX, AES_IV_HEX)
+        dec = aes_decrypt_hex(raw, SERVER_AES_KEY_HEX)
+        decrypted[label] = dec
 
-        # Then split into value::challenge_id::challenge_token
-        parts = pt.split("::")
-        value = parts[0] if len(parts) > 0 else None
-        challenge_id = parts[1] if len(parts) > 1 else None
-        token = parts[2] if len(parts) > 2 else None
+    return jsonify({
+        "ok": True,
+        "decrypted": decrypted,
+        "timestamp": latest.get("created_at")
+    })
 
-        decrypted[fname] = {
-            "value": value,
-            "challenge_id": challenge_id,
-            "challenge_token": token
-        }
-
-    return jsonify({"decrypted": decrypted})
-
-# --- Serve frontend ---
+# --- Serve frontend files ---
 @app.route("/", defaults={"path": "index.html"})
 @app.route("/<path:path>")
 def frontend(path):
+    full_path = os.path.join(FRONTEND_FOLDER, path)
+    if not os.path.isfile(full_path):
+        path = "index.html"
     return send_from_directory(FRONTEND_FOLDER, path)
 
+# --- Main entry (HTTPS) ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    # Run with HTTPS using an adhoc self-signed certificate
+    # Compatible with ESP8266 client.setInsecure()
+    app.run(
+        host="0.0.0.0",
+        port=5000,
+        ssl_context="adhoc",  # Enables temporary self-signed SSL certificate
+        debug=True
+    )
