@@ -8,7 +8,7 @@ from config import *
 from quantum_key import get_quantum_challenge
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-FRONTEND_FOLDER = os.path.join(BASE_DIR, "../frontend")  # Adjusted for folder structure
+FRONTEND_FOLDER = os.path.join(BASE_DIR, "../frontend")
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
@@ -16,18 +16,13 @@ challenges = {}
 
 # --- AES decrypt helper ---
 def aes_decrypt_hex(cipher_hex: str, key_hex: str) -> str:
-    """
-    Decrypts hex ciphertext of format 'iv:ciphertext' using AES-CBC and hex key.
-    """
     try:
         if ":" not in cipher_hex:
             return "invalid_format"
-
         iv_hex, ct_hex = cipher_hex.split(":")
         key = unhexlify(key_hex)
         iv = unhexlify(iv_hex)
         ct = unhexlify(ct_hex)
-
         cipher = AES.new(key, AES.MODE_CBC, iv)
         pt = unpad(cipher.decrypt(ct), AES.block_size)
         return pt.decode("utf-8", errors="ignore")
@@ -42,7 +37,7 @@ def fetch_thingspeak_latest():
     r.raise_for_status()
     return r.json()
 
-# --- API: Quantum Key Generator (for ESP8266) ---
+# --- API: Quantum Key Generator ---
 @app.route("/quantum", methods=["GET"])
 def api_quantum():
     token = request.args.get("token")
@@ -67,7 +62,6 @@ def api_latest():
         return jsonify({"error": "No feed data"}), 404
 
     latest = feeds[-1]
-
     fields = {
         "field1": "Quantum Key",
         "field2": "Temperature",
@@ -77,13 +71,11 @@ def api_latest():
     }
 
     decrypted = {}
-
     for fkey, label in fields.items():
         raw = latest.get(fkey)
         if not raw:
             decrypted[label] = "None"
             continue
-
         dec = aes_decrypt_hex(raw, SERVER_AES_KEY_HEX)
         decrypted[label] = dec
 
@@ -102,13 +94,12 @@ def frontend(path):
         path = "index.html"
     return send_from_directory(FRONTEND_FOLDER, path)
 
-# --- Main entry (HTTPS) ---
+# --- Main entry for deployment ---
 if __name__ == "__main__":
-    # Run with HTTPS using an adhoc self-signed certificate
-    # Compatible with ESP8266 client.setInsecure()
+    # Use environment PORT if provided, default to 5000 locally
+    port = int(os.environ.get("PORT", 5000))
     app.run(
         host="0.0.0.0",
-        port=5000,
-        ssl_context="adhoc",  # Enables temporary self-signed SSL certificate
+        port=port,
         debug=True
     )
