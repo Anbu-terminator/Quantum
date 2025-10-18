@@ -1,53 +1,44 @@
 # backend/quantum_key.py
-import os
-import binascii
+import requests, os, json
 from config import IBM_API_TOKEN
 
-def get_quantum_bytes(n_bytes=16):
+IBM_QUANTUM_URL = "https://quantum-computing.ibm.com/api/RandomNumbers"  # Example URL
+
+def get_quantum_challenge(nbytes: int = 16) -> str:
     """
-    Try to fetch n_bytes of quantum random data using Qiskit & IBM token.
-    If Qiskit or IBM access fails, fall back to os.urandom.
-    Returns bytes.
+    Fetch real quantum random bytes from IBM Quantum API.
+    Returns hex string of length 2*nbytes.
+    Fallback to pseudo-random if network/API fails.
     """
-    # Try Qiskit approach
+    headers = {
+        "Authorization": f"Bearer {IBM_API_TOKEN}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "n": nbytes  # number of bytes requested
+    }
+
     try:
-        from qiskit import IBMQ, QuantumCircuit, transpile, assemble, Aer, execute
-        # Attempt to load account
-        if IBM_API_TOKEN and IBM_API_TOKEN.strip():
-            try:
-                IBMQ.enable_account(IBM_API_TOKEN)
-                provider = IBMQ.get_provider(hub='ibm-q')  # may vary
-                backend = provider.get_backend('ibmq_qasm_simulator')  # use a backend available to you
-            except Exception:
-                # fallback to local Aer simulator / or real backend if available
-                backend = Aer.get_backend('qasm_simulator')
-        else:
-            from qiskit import Aer
-            backend = Aer.get_backend('qasm_simulator')
+        # NOTE: Replace this endpoint with IBM actual quantum randomness endpoint
+        # IBM provides random numbers via https://quantum-computing.ibm.com/api/...
+        r = requests.post(IBM_QUANTUM_URL, headers=headers, json=payload, timeout=5)
+        r.raise_for_status()
+        data = r.json()
 
-        # create circuit to generate n_bytes * 8 bits
-        n_bits = n_bytes * 8
-        qc = QuantumCircuit(n_bits, n_bits)
-        for i in range(n_bits):
-            qc.h(i)
-            qc.measure(i, i)
+        # Expected: data['result'] contains list of integers 0-255
+        nums = data.get("result", [])
+        if len(nums) < nbytes:
+            raise ValueError("Insufficient quantum bytes returned")
 
-        transpiled = transpile(qc, backend=backend)
-        qobj = assemble(transpiled, shots=1)
-        job = backend.run(qobj)
-        result = job.result()
-        counts = result.get_counts()
-        # counts is dict like {'01011..': 1}
-        bitstring = next(iter(counts.keys()))
-        # qiskit returns little/big-endian depending — normalize by taking first n_bits
-        bitstring = bitstring.replace(" ", "")
-        # ensure length
-        if len(bitstring) < n_bits:
-            # pad (shouldn't happen for most backends)
-            bitstring = bitstring.zfill(n_bits)
-        # convert to bytes
-        b = int(bitstring, 2).to_bytes(n_bytes, 'big')
-        return b
+        # Convert to hex
+        hex_str = ''.join(f"{b:02x}" for b in nums[:nbytes])
+        return hex_str
+
     except Exception as e:
-        # fallback to OS randomness
-        return os.urandom(n_bytes)
+        print(f"[Quantum] IBM API failed, using pseudo-random fallback: {e}")
+        # fallback: pseudo-random bytes
+        import random
+        fallback = [random.randint(0, 255) for _ in range(nbytes)]
+        hex_str = ''.join(f"{b:02x}" for b in fallback)
+        return hex_str
