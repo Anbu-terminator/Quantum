@@ -1,21 +1,34 @@
-<!DOCTYPE html>
+<!-- frontend/index.html -->
+<!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>QuantumAES Sensor Dashboard</title>
-  <link rel="stylesheet" href="style.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Q-SENSE Dashboard</title>
+  <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <header>
-    <h1>QuantumAES Sensor Dashboard</h1>
-    <button id="refreshBtn">Refresh Data</button>
-  </header>
+  <main>
+    <h1>Q-SENSE Dashboard</h1>
+    <div id="raw-encrypted">
+      <h2>ThingSpeak (encrypted)</h2>
+      <pre id="ts-raw">Loading...</pre>
+    </div>
 
-  <main id="data">
-    <!-- Sensor cards will appear here -->
+    <div id="decrypted">
+      <h2>Decrypted Values</h2>
+      <ul id="values">
+        <li>Field1: <span id="f1">—</span></li>
+        <li>Temperature: <span id="f2">—</span></li>
+        <li>Humidity: <span id="f3">—</span></li>
+        <li>IR Sensor: <span id="f4">—</span></li>
+        <li>MAX30100: <span id="f5">—</span></li>
+      </ul>
+    </div>
+
+    <button id="refresh">Refresh Now</button>
+    <p id="status"></p>
   </main>
-
   <script src="script.js"></script>
 </body>
 </html>
