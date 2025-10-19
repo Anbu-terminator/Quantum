@@ -1,6 +1,6 @@
-# server.py 
+# server.py
 from flask import Flask, jsonify, send_from_directory, request, abort
-import requests, os, re
+import requests, os, re, struct
 from binascii import unhexlify
 from Crypto.Cipher import AES
 from config import *
@@ -15,24 +15,36 @@ if not os.path.exists(FRONTEND_FOLDER):
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
 # ---------- Utility Helpers ----------
-def printable_ascii(b: bytes) -> str:
-    """Keep only printable ASCII characters."""
-    return ''.join(chr(c) for c in b if 32 <= c <= 126).strip()
-
-def clean_value(raw_text: str, label: str) -> str:
+def extract_numeric_from_bytes(pt: bytes) -> str:
     """
-    Cleans and extracts a meaningful value for each sensor field.
-    For IR and sensor data, prefers numeric/float extraction.
+    Try to interpret decrypted bytes as numeric data.
+    Attempts ASCII, then binary-int and float conversions.
     """
-    # General cleanup first
-    cleaned = re.sub(r'[^0-9A-Za-z.\-+/]', '', raw_text).strip()
+    # 1️⃣ Try to decode as ASCII digits
+    txt = ''.join(chr(b) for b in pt if 32 <= b <= 126)
+    num_match = re.search(r'[-+]?\d*\.?\d+', txt)
+    if num_match:
+        return num_match.group(0)
 
-    # Specific fallback for numeric sensor values (Temperature, Humidity, IR, MAX30100)
-    if label.lower() in ["temperature", "humidity", "ir sensor", "max30100"]:
-        num_match = re.search(r'[-+]?\d*\.?\d+', cleaned)
-        if num_match:
-            return num_match.group(0)
-    return cleaned or "N/A"
+    # 2️⃣ Try to unpack bytes as little-endian float or int
+    try:
+        if len(pt) >= 4:
+            val_f = struct.unpack('<f', pt[:4])[0]
+            if -1000 < val_f < 10000:
+                return f"{val_f:.2f}"
+    except Exception:
+        pass
+
+    try:
+        if len(pt) >= 2:
+            val_i = struct.unpack('<H', pt[:2])[0]
+            if 0 <= val_i < 10000:
+                return str(val_i)
+    except Exception:
+        pass
+
+    # 3️⃣ Fallback to printable hex
+    return re.sub(r'[^0-9A-Za-z.\-]', '', txt) or "N/A"
 
 
 # --- AES decrypt and clean parse ---
@@ -56,23 +68,27 @@ def aes_decrypt_and_clean(cipher_hex: str, key_hex: str, label: str):
         if 1 <= pad_len <= AES.block_size and pt[-pad_len:] == bytes([pad_len]) * pad_len:
             pt = pt[:-pad_len]
 
-        # Decode with latin-1 to keep all bytes
-        raw_text = pt.decode("latin-1", errors="ignore")
-
-        # Extract 32-hex quantum key if present
-        m_q = re.search(r'([0-9a-fA-F]{32})', raw_text)
+        # Extract Quantum Key if any (ASCII hex pattern)
+        try:
+            decoded_text = pt.decode("latin-1", errors="ignore")
+        except Exception:
+            decoded_text = ""
+        m_q = re.search(r'([0-9a-fA-F]{32})', decoded_text)
         quantum = m_q.group(1) if m_q else None
         out["quantum"] = quantum
 
-        # Value part (strip quantum tail)
-        val_part = raw_text.split(quantum)[0] if quantum else raw_text
+        # Remove quantum bytes from plaintext if found
+        if quantum:
+            q_bytes = quantum.encode("latin-1", errors="ignore")
+            val_bytes = pt.replace(q_bytes, b"")
+        else:
+            val_bytes = pt
 
-        # Clean and interpret
-        val_clean = clean_value(val_part, label)
-
-        # If it's the Quantum Key field, force quantum output
+        # For Quantum Key field: directly output the hex
         if label.lower() == "quantum key":
-            val_clean = quantum or val_clean or "N/A"
+            val_clean = quantum or "N/A"
+        else:
+            val_clean = extract_numeric_from_bytes(val_bytes)
 
         out["value"] = val_clean
         out["ok"] = True
