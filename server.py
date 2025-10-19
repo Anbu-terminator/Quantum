@@ -1,9 +1,7 @@
-# backend/server.py
 from flask import Flask, jsonify, send_from_directory, request, abort
 import requests, base64, json, uuid, os
 from binascii import unhexlify
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import unpad
 from config import *
 from quantum_key import get_quantum_challenge
 
@@ -16,7 +14,7 @@ if not os.path.exists(FRONTEND_FOLDER):
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
-# --- AES decrypt helper ---
+# --- AES decrypt helper (updated) ---
 def aes_decrypt_hex(cipher_hex: str, key_hex: str) -> str:
     try:
         if ":" not in cipher_hex:
@@ -25,9 +23,18 @@ def aes_decrypt_hex(cipher_hex: str, key_hex: str) -> str:
         key = unhexlify(key_hex)
         iv = unhexlify(iv_hex)
         ct = unhexlify(ct_hex)
+
         cipher = AES.new(key, AES.MODE_CBC, iv)
-        pt = unpad(cipher.decrypt(ct), AES.block_size)
-        return pt.decode("utf-8", errors="ignore")
+        pt = cipher.decrypt(ct)
+
+        # Manual PKCS7 unpad
+        pad_len = pt[-1]
+        if pad_len < 1 or pad_len > AES.block_size:
+            return "bad_padding"
+        pt = pt[:-pad_len]
+
+        # Convert bytes to UTF-8 string
+        return pt.decode("utf-8")
     except Exception as e:
         return f"error:{e}"
 
