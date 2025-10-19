@@ -1,4 +1,4 @@
-# server.py
+# server.py 
 from flask import Flask, jsonify, send_from_directory, request, abort
 import requests, os, re
 from binascii import unhexlify
@@ -19,8 +19,24 @@ def printable_ascii(b: bytes) -> str:
     """Keep only printable ASCII characters."""
     return ''.join(chr(c) for c in b if 32 <= c <= 126).strip()
 
+def clean_value(raw_text: str, label: str) -> str:
+    """
+    Cleans and extracts a meaningful value for each sensor field.
+    For IR and sensor data, prefers numeric/float extraction.
+    """
+    # General cleanup first
+    cleaned = re.sub(r'[^0-9A-Za-z.\-+/]', '', raw_text).strip()
+
+    # Specific fallback for numeric sensor values (Temperature, Humidity, IR, MAX30100)
+    if label.lower() in ["temperature", "humidity", "ir sensor", "max30100"]:
+        num_match = re.search(r'[-+]?\d*\.?\d+', cleaned)
+        if num_match:
+            return num_match.group(0)
+    return cleaned or "N/A"
+
+
 # --- AES decrypt and clean parse ---
-def aes_decrypt_and_clean(cipher_hex: str, key_hex: str):
+def aes_decrypt_and_clean(cipher_hex: str, key_hex: str, label: str):
     out = {"ok": False, "value": "N/A", "quantum": None, "error": None}
     try:
         if ":" not in cipher_hex:
@@ -36,36 +52,29 @@ def aes_decrypt_and_clean(cipher_hex: str, key_hex: str):
         pt = cipher.decrypt(ct)
 
         # Try PKCS7 unpad
-        try:
-            pad_len = pt[-1]
-            if 1 <= pad_len <= AES.block_size and pt[-pad_len:] == bytes([pad_len]) * pad_len:
-                pt = pt[:-pad_len]
-        except Exception:
-            pass
+        pad_len = pt[-1]
+        if 1 <= pad_len <= AES.block_size and pt[-pad_len:] == bytes([pad_len]) * pad_len:
+            pt = pt[:-pad_len]
 
-        # Decode safely (latin-1 keeps all bytes)
+        # Decode with latin-1 to keep all bytes
         raw_text = pt.decode("latin-1", errors="ignore")
 
-        # --- Extract 32-hex quantum key if present ---
+        # Extract 32-hex quantum key if present
         m_q = re.search(r'([0-9a-fA-F]{32})', raw_text)
         quantum = m_q.group(1) if m_q else None
         out["quantum"] = quantum
 
-        # --- Extract clean numeric/character value before the quantum key ---
-        if quantum:
-            # Take everything before the quantum hex
-            val_part = raw_text.split(quantum)[0]
-        else:
-            val_part = raw_text
+        # Value part (strip quantum tail)
+        val_part = raw_text.split(quantum)[0] if quantum else raw_text
 
-        # Remove non-printable and stray punctuation except digits, '.', '/', and '-'
-        val_clean = re.sub(r'[^0-9A-Za-z./\-]', '', val_part).strip()
+        # Clean and interpret
+        val_clean = clean_value(val_part, label)
 
-        # If field is the Quantum Key itself (Arduino sends "Q::challenge::quantum"), handle that
-        if val_clean == "" and quantum:
-            val_clean = quantum
+        # If it's the Quantum Key field, force quantum output
+        if label.lower() == "quantum key":
+            val_clean = quantum or val_clean or "N/A"
 
-        out["value"] = val_clean if val_clean else (quantum or "N/A")
+        out["value"] = val_clean
         out["ok"] = True
         return out
 
@@ -125,16 +134,12 @@ def api_latest():
             decrypted[label] = "N/A"
             continue
 
-        parsed = aes_decrypt_and_clean(raw, SERVER_AES_KEY_HEX)
+        parsed = aes_decrypt_and_clean(raw, SERVER_AES_KEY_HEX, label)
         if not parsed["ok"]:
-            decrypted[label] = "N/A"
+            decrypted[label] = f"error:{parsed['error']}"
             continue
 
-        # For the Quantum Key field, show the 32-hex key directly
-        if label == "Quantum Key":
-            decrypted[label] = parsed["quantum"] or parsed["value"]
-        else:
-            decrypted[label] = parsed["value"]
+        decrypted[label] = parsed["value"]
 
     return jsonify({
         "ok": True,
