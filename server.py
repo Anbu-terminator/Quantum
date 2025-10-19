@@ -1,61 +1,57 @@
 # server.py
 from flask import Flask, jsonify, send_from_directory, request, abort
-import requests, os, re, struct
+import requests, os, re, struct, logging
 from binascii import unhexlify
 from Crypto.Cipher import AES
 from config import *
 from quantum_key import get_quantum_challenge
 
-# --- Locate frontend folder robustly ---
+# --- Basic app / frontend locate ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_FOLDER = os.path.abspath(os.path.join(BASE_DIR, "frontend"))
 if not os.path.exists(FRONTEND_FOLDER):
     FRONTEND_FOLDER = os.path.abspath(os.path.join(BASE_DIR, "frontend"))
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
+logging.basicConfig(level=logging.INFO)
 
 # ---------- Helpers ----------
-HEX_RE = re.compile(r'[0-9a-fA-F]+')
+HEX_CHARS = set("0123456789abcdefABCDEF")
 
 def _only_hex(s: str) -> str:
-    """Return only hex characters from s."""
-    return ''.join(ch for ch in s if ch in "0123456789abcdefABCDEF")
+    return ''.join(ch for ch in (s or "") if ch in HEX_CHARS)
 
 def _find_iv_and_cipher(field: str):
     """
-    Robustly find IV (16 bytes -> 32 hex chars) and ciphertext hex from a field value.
-    Handles strings like "iv:cipher", but also messy multi-colon cases.
-    Returns (iv_hex, cipher_hex) or (None, None) on failure.
+    Robustly locate a 16-byte IV (32 hex chars) and ciphertext hex in a ThingSpeak field value.
+    Many samples contained the iv, then the ciphertext and sometimes the iv repeated.
+    We return (iv_hex, cipher_hex) using defensive extraction.
     """
     if not field or not isinstance(field, str):
         return None, None
 
-    # Normalize whitespace and URL-encoded colon etc.
-    s = field.replace('%3A', ':').replace('%3a', ':').strip()
-
-    # Split on colons to get tokens; tokens may contain non-hex noise
+    s = field.replace('%3A', ':').strip()
     tokens = s.split(':')
-    # Try to find the first token that contains at least 32 hex chars (potential IV)
-    for i, tok in enumerate(tokens):
-        tok_hex = _only_hex(tok)
-        if len(tok_hex) >= 32:
-            iv_hex = tok_hex[:32]  # take first 32 hex chars as IV
-            # Build cipher hex from remainder tokens (and remainder of the tok after iv)
-            remainder = tok_hex[32:]  # leftover from same token
-            # concatenate remainder + all tokens after i
-            tail = remainder + ''.join(_only_hex(t) for t in tokens[i+1:])
-            # Remove any accidental repeated iv at tail (common in collected samples)
-            # If tail starts with iv_hex again, strip it
-            if tail.startswith(iv_hex):
-                tail = tail[len(iv_hex):]
-            if len(tail) == 0:
-                # no ciphertext (invalid)
-                return None, None
-            return iv_hex, tail
 
-    # Fallback: try to match a contiguous hex pair "32hex" followed by a multi-of-32 hex ciphertext
+    # Search tokens for something containing >= 32 hex chars (candidate IV)
+    for i, tok in enumerate(tokens):
+        rawhex = _only_hex(tok)
+        if len(rawhex) >= 32:
+            iv_hex = rawhex[:32]
+            remainder = rawhex[32:]
+            # join the remainder of this token with the remainder tokens (hex-only)
+            tail = remainder + ''.join(_only_hex(t) for t in tokens[i+1:])
+            # Some samples have the IV appended at the end of tail; keep the tail as-is
+            # (we used to strip a trailing IV, but that produced invalid block sizes).
+            # If there is an accidental duplication at the very start of the tail, strip it:
+            while tail.startswith(iv_hex):
+                tail = tail[len(iv_hex):]
+            # If the tail is empty, try to fallback to full-hex approach below
+            if tail:
+                return iv_hex, tail
+
+    # Fallback: extract all hex present and split into iv(32) + cipher(remaining)
     allhex = _only_hex(s)
-    # if allhex contains at least 32+32 hex chars, take first 32 as iv, rest as cipher
     if len(allhex) >= 64:
         iv_hex = allhex[:32]
         cipher_hex = allhex[32:]
@@ -63,89 +59,174 @@ def _find_iv_and_cipher(field: str):
 
     return None, None
 
-def _pkcs7_unpad(b: bytes) -> bytes | None:
+def _pkcs7_unpad(b: bytes) -> bytes:
     if not b:
-        return None
+        return b
     pad_len = b[-1]
-    if pad_len < 1 or pad_len > AES.block_size:
-        # invalid padding -> return original (we'll still attempt parsing)
-        return b
-    if b[-pad_len:] != bytes([pad_len]) * pad_len:
-        return b
-    return b[:-pad_len]
+    if 1 <= pad_len <= AES.block_size and b[-pad_len:] == bytes([pad_len]) * pad_len:
+        return b[:-pad_len]
+    # invalid padding -> return original (we'll still attempt parsing)
+    return b
 
-def _extract_value_from_plaintext(pt: bytes):
-    """
-    Decodes plaintext bytes to a value string.
-    Expected Arduino plaintext: "<value>::<challenge>::<quantum_hex>"
-    We will:
-     - try utf-8 decode and split on "::"
-     - if not ascii/utf-8, fallback to printable extraction and numeric heuristics
-    """
-    # 1) Try utf-8 decode cleanly
-    try:
-        s = pt.decode('utf-8')
-    except Exception:
-        # fallback latin-1 decode
-        s = pt.decode('latin-1', errors='ignore')
+# Heuristics / plausibility
+def _plausible_for_label(value_float: float, label: str) -> bool:
+    label_low = label.lower()
+    if "temp" in label_low:
+        return -10.0 <= value_float <= 80.0
+    if "humid" in label_low:
+        return 0.0 <= value_float <= 100.0
+    if "ir" in label_low:
+        return int(round(value_float)) in (0, 1)
+    if "max30100" in label_low:
+        return 20.0 <= value_float <= 220.0
+    return True
 
-    # If contains separators, parse forward
+# Try to extract numeric / printable from plaintext bytes
+def _extract_value_from_plaintext_bytes(pt_bytes: bytes, label: str):
+    """
+    Multiple layered attempts:
+      1) decode latin-1 and search for 'value::challenge::quantumhex' pattern;
+      2) if present, take token before the challenge as the value (clean it);
+      3) otherwise scan printable substrings; prefer decimals in realistic ranges;
+      4) attempt binary float/int scans as a last resort;
+      5) fallback to cleaned printable tail.
+    """
+    s = pt_bytes.decode("latin-1", errors="ignore")
+
+    # 1) look for a 32-hex quantum anywhere
+    for m in re.finditer(r'([0-9a-fA-F]{32})', s):
+        q = m.group(1)
+        left = s[: m.start() ]
+        # split by '::' tokens to find the "value" token before the challenge token
+        parts = left.split("::")
+        if len(parts) >= 2:
+            candidate_raw = parts[-1]  # text between last '::' and quantum -> this is *challenge*
+            # value token is the token before the challenge token:
+            value_token = parts[-2].strip()
+            # clean common noise and keep digits, decimal point, slash (for bpm/spo2), +/- and alnum
+            cleaned = re.sub(r'[^0-9A-Za-z\.\-+/]', '', value_token)
+            # if it's clearly numeric (including x/y), prefer that
+            mnum = re.search(r'\d{1,3}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?', cleaned)
+            if mnum:
+                v = mnum.group(0)
+                # validate plausibility if numeric
+                try:
+                    if "/" in v:
+                        leftpart = float(v.split("/")[0])
+                        if _plausible_for_label(leftpart, label):
+                            return v
+                    else:
+                        if _plausible_for_label(float(v), label):
+                            return v
+                except Exception:
+                    pass
+            # if cleaned not numeric, return short alnum tail
+            tail_alnum = re.search(r'([A-Za-z0-9.\-+/]{1,64})$', cleaned)
+            if tail_alnum:
+                return tail_alnum.group(1)
+
+        # if pattern present but unable to parse via tokens, try immediate numeric before quantum
+        left_nums = re.findall(r'\d{1,3}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?', left)
+        if left_nums:
+            for cand in reversed(left_nums):
+                try:
+                    if "/" in cand:
+                        base = float(cand.split("/")[0])
+                    else:
+                        base = float(cand)
+                    if _plausible_for_label(base, label):
+                        return cand
+                except Exception:
+                    continue
+
+    # 2) No 32-hex quantum pattern -> parse general '::' pattern in s
     if "::" in s:
         parts = s.split("::")
-        val = parts[0].strip()
-        # quantum if present
-        quantum = parts[2].strip() if len(parts) > 2 else None
-        # If Arduino used 'Q' for quantum field, user wants quantum hex returned
-        if val == "Q" and quantum and re.fullmatch(r'[0-9a-fA-F]{32}', quantum):
-            return quantum
-        # otherwise return the plain value (cleaned)
-        return _clean_sensor_value(val)
+        if len(parts) >= 2:
+            # take first token as likely value (Arduino constructs value::challenge::quantum)
+            candidate = parts[0].strip()
+            cleaned = re.sub(r'[^0-9A-Za-z\.\-+/]', '', candidate)
+            mnum = re.search(r'\d{1,3}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?', cleaned)
+            if mnum:
+                cand = mnum.group(0)
+                try:
+                    if _plausible_for_label(float(cand.split("/")[0]) if "/" in cand else float(cand), label):
+                        return cand
+                except Exception:
+                    pass
+            tail_alnum = re.search(r'([A-Za-z0-9.\-+/]{1,64})$', cleaned)
+            if tail_alnum:
+                return tail_alnum.group(1)
 
-    # No separators — try to extract a 32-hex quantum anywhere
-    m = re.search(r'([0-9a-fA-F]{32})', s)
-    if m:
-        q = m.group(1)
-        # strip the quantum from the text and try to find a numeric before it
-        before = s.split(q)[0]
-        num = _find_best_number(before)
-        return num or q
+    # 3) scan printable substrings and rank candidates by plausibility
+    printable_pieces = re.findall(r'[\x20-\x7E]{1,80}', s)
+    best_score = -999
+    best_val = None
+    for piece in printable_pieces:
+        # prefer x/y patterns first (MAX30100)
+        mxy = re.search(r'\d{1,3}/\d{1,3}(?:\.\d+)?', piece)
+        if mxy:
+            cand = mxy.group(0)
+            try:
+                base = float(cand.split('/')[0])
+                score = 50 if _plausible_for_label(base, label) else 0
+                if score > best_score:
+                    best_score = score; best_val = cand
+            except Exception:
+                pass
+        # numeric candidate
+        mnum = re.search(r'\d{1,3}(?:\.\d+)?', piece)
+        if mnum:
+            cand = mnum.group(0)
+            try:
+                base = float(cand)
+                score = 30 if _plausible_for_label(base, label) else 5
+                # longer printable piece with digits is slightly more trustworthy
+                score += max(0, min(10, len(piece)//5))
+                if score > best_score:
+                    best_score = score; best_val = cand
+            except Exception:
+                pass
+        # alphanumeric fallback
+        al = re.search(r'([A-Za-z0-9.\-+/]{1,64})', piece)
+        if al and best_score < 5:
+            best_score = 1
+            best_val = al.group(1)
 
-    # No quantum found — try numeric extraction
-    num = _find_best_number(s)
-    if num:
-        return num
+    if best_val is not None:
+        return best_val
 
-    # final fallback: printable ASCII trimmed
+    # 4) try binary scans: floats (4 bytes LE) then uint16
+    for i in range(0, len(pt_bytes) - 3):
+        chunk = pt_bytes[i:i+4]
+        try:
+            f = struct.unpack('<f', chunk)[0]
+            if _plausible_for_label(f, label):
+                # format nicely
+                return f"{f:.2f}"
+        except Exception:
+            pass
+    for i in range(0, len(pt_bytes) - 1):
+        chunk = pt_bytes[i:i+2]
+        try:
+            u = struct.unpack('<H', chunk)[0]
+            if _plausible_for_label(float(u), label):
+                return str(u)
+        except Exception:
+            pass
+
+    # 5) final fallback - printable tail or hex fallback
     printable = ''.join(ch for ch in s if 32 <= ord(ch) <= 126).strip()
-    return printable or "N/A"
+    if printable:
+        # trim to a reasonable size
+        p = printable[-64:]
+        return p
+    return "N/A"
 
-def _clean_sensor_value(s: str) -> str:
-    """Remove stray characters but keep digits, dot, slash, minus, plus."""
-    cleaned = re.sub(r'[^0-9\.\-+/]', '', s).strip()
-    return cleaned or "N/A"
-
-def _find_best_number(s: str) -> str | None:
-    """
-    Try patterns in order:
-      - number with optional decimal
-      - number/number (e.g., bpm/spo2)
-      - integer
-    """
-    s2 = ''.join(ch for ch in s if 32 <= ord(ch) <= 126)
-    # bpm/spo2 like 72/98.5
-    m = re.search(r'\d{1,3}/\d{1,3}(?:\.\d+)?', s2)
-    if m:
-        return m.group(0)
-    # decimal or integer
-    m = re.search(r'[-+]?\d{1,4}(?:\.\d+)?', s2)
-    if m:
-        return m.group(0)
-    return None
-
-# ---------- AES decrypt and parse ----------
+# ---------- AES decrypt + parse ----------
 def aes_decrypt_and_parse(field_value: str, key_hex: str, label: str):
     """
-    Returns dict: {ok, value, quantum, error}
+    Return dict: { ok: bool, value: str, quantum: str|None, error: str|None }
     """
     out = {"ok": False, "value": "N/A", "quantum": None, "error": None}
     try:
@@ -154,21 +235,18 @@ def aes_decrypt_and_parse(field_value: str, key_hex: str, label: str):
             out["error"] = "iv_or_cipher_not_found"
             return out
 
-        # ensure even-length hex strings consisting only of hex chars
-        iv_hex = _only_hex(iv_hex)
+        # clean hex strings (safety)
+        iv_hex = _only_hex(iv_hex)[:32]
         cipher_hex = _only_hex(cipher_hex)
-        if len(iv_hex) < 32:
-            out["error"] = "iv_too_short"
+        if len(iv_hex) != 32 or len(cipher_hex) < 32:
+            out["error"] = "invalid_iv_or_cipher_length"
             return out
-
-        # trim IV to 32 chars (16 bytes)
-        iv_hex = iv_hex[:32]
 
         try:
             iv = unhexlify(iv_hex)
             ct = unhexlify(cipher_hex)
         except Exception as e:
-            out["error"] = f"hex_unhexlify_error:{e}"
+            out["error"] = f"hex_decode_error:{e}"
             return out
 
         key = unhexlify(key_hex)
@@ -177,23 +255,25 @@ def aes_decrypt_and_parse(field_value: str, key_hex: str, label: str):
         cipher = AES.new(key, AES.MODE_CBC, iv)
         pt = cipher.decrypt(ct)
 
-        # Try PKCS7 unpad — Arduino pads manually so this should succeed
-        pt_unpadded = _pkcs7_unpad(pt) or pt
+        # Attempt PKCS#7 unpad; if invalid padding we still keep pt (the function returns original)
+        pt_unp = _pkcs7_unpad(pt)
 
-        # Extract quantum if present (32 hex) from decoded text
+        # Try to decode (we use latin-1 to preserve bytes for heuristic parsing)
         decoded_try = None
         try:
-            decoded_try = pt_unpadded.decode('utf-8')
+            decoded_try = pt_unp.decode('utf-8', errors='ignore')
         except Exception:
-            decoded_try = pt_unpadded.decode('latin-1', errors='ignore')
+            decoded_try = pt_unp.decode('latin-1', errors='ignore')
 
+        # Look for 32-hex quantum
         m_q = re.search(r'([0-9a-fA-F]{32})', decoded_try)
         if m_q:
             out["quantum"] = m_q.group(1)
 
-        # Extract the value according to Arduino format
-        value = _extract_value_from_plaintext(pt_unpadded)
+        # Extract the sensor value using layered heuristics
+        value = _extract_value_from_plaintext_bytes(pt_unp, label)
         out["value"] = value
+
         out["ok"] = True
         return out
 
