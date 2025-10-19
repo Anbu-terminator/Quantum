@@ -18,49 +18,41 @@ app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
 HEX_CHARS = set("0123456789abcdefABCDEF")
 
-def _only_hex(s: str) -> str:
+def only_hex(s: str) -> str:
     if not s:
         return ""
     return ''.join(ch for ch in s if ch in HEX_CHARS)
 
-def _safe_split_iv_cipher(field: str):
-    """
-    Given a ThingSpeak field value, robustly find iv_hex (32 hex chars) and ciphertext hex.
-    Accepts clean 'iv:cipher' and some messy variants observed in feeds.
-    Returns (iv_hex, cipher_hex) or (None, None) if not found.
-    """
+def find_iv_cipher(field: str):
+    """Return (iv_hex, cipher_hex) or (None,None). Prefer first token:token but fallback to all-hex split."""
     if not field or not isinstance(field, str):
         return None, None
 
-    # normalize common URL-encoding of colon
     s = field.replace('%3A', ':').replace('%3a', ':').strip()
-
-    # common clean case: first ':' separates IV and cipher
     if ':' in s:
         left, right = s.split(':', 1)
-        left_hex = _only_hex(left)
-        right_hex = _only_hex(right)
-        if len(left_hex) >= 32 and len(right_hex) >= 32:
-            iv_hex = left_hex[:32]
-            cipher_hex = right_hex
-            # remove accidental repeated iv at start of cipher_hex if present
-            while cipher_hex.startswith(iv_hex):
-                cipher_hex = cipher_hex[len(iv_hex):]
-            return iv_hex, cipher_hex
+        left_h = only_hex(left)
+        right_h = only_hex(right)
+        if len(left_h) >= 32 and len(right_h) >= 32:
+            iv = left_h[:32]
+            cipher = right_h
+            # if cipher was prefixed with repeated IV, drop it
+            while cipher.startswith(iv):
+                cipher = cipher[len(iv):]
+            return iv, cipher
 
-    # fallback: extract all hex and split first 32 chars for IV, rest for cipher
-    allhex = _only_hex(s)
-    if len(allhex) >= 64:
-        iv_hex = allhex[:32]
-        cipher_hex = allhex[32:]
-        # if cipher_hex begins with iv_hex, drop that repetition
-        while cipher_hex.startswith(iv_hex):
-            cipher_hex = cipher_hex[len(iv_hex):]
-        return iv_hex, cipher_hex
+    # fallback: take all hex and split
+    allh = only_hex(s)
+    if len(allh) >= 64:
+        iv = allh[:32]
+        cipher = allh[32:]
+        while cipher.startswith(iv):
+            cipher = cipher[len(iv):]
+        return iv, cipher
 
     return None, None
 
-def _pkcs7_unpad(b: bytes) -> bytes:
+def pkcs7_unpad(b: bytes) -> bytes:
     if not b:
         return b
     pad = b[-1]
@@ -68,83 +60,71 @@ def _pkcs7_unpad(b: bytes) -> bytes:
         return b[:-pad]
     return b
 
-def _find_32hex_in_bytes(b: bytes):
-    m = re.search(rb'([0-9a-fA-F]{32})', b)
-    return m.group(1).decode('ascii') if m else None
+def extract_first_token_from_bytes(pt: bytes) -> bytes:
+    """Return bytes before first b'::' if present, else full pt."""
+    idx = pt.find(b"::")
+    if idx != -1:
+        return pt[:idx].strip()
+    return pt.strip()
 
-def _extract_value_bytes(pt_unp: bytes, label: str) -> str:
-    """
-    Parse plaintext bytes and return the sensor value string.
-    Strategy:
-      1) If b"::" present, take bytes before first b"::" as value.
-      2) Else if 32-hex quantum present, find a numeric/value immediately before it.
-      3) Else attempt numeric regex over entire plaintext.
-      4) Fallback: return printable ASCII chunk.
-    """
-    # 1) split by b'::'
-    if b"::" in pt_unp:
-        parts = pt_unp.split(b"::")
-        if len(parts) >= 1:
-            value_bytes = parts[0].strip()
-            # decode to ascii ignoring invalid bytes
-            try:
-                value = value_bytes.decode('utf-8', errors='ignore').strip()
-            except Exception:
-                value = ''.join(chr(c) for c in value_bytes if 32 <= c < 127).strip()
-            if value != "":
-                return value
+def decode_and_clean_value(val_bytes: bytes, label: str) -> str:
+    """Try utf-8 -> latin1 -> numeric extraction -> printable fallback."""
+    # 1) try utf-8
+    try:
+        s = val_bytes.decode('utf-8')
+    except Exception:
+        s = val_bytes.decode('latin-1', errors='ignore')
 
-    # 2) search for quantum and numeric before it
-    m_q = re.search(rb'([0-9a-fA-F]{32})', pt_unp)
-    if m_q:
-        q_start = m_q.start()
-        before = pt_unp[:q_start]
-        # look for the last numeric-ish token before quantum (e.g., "25.3" or "72/98.5")
-        m_num = re.search(rb'(\d{1,3}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?)\b', before[::-1])
-        if m_num:
-            # m_num is on reversed bytes; reverse back
-            rev = m_num.group(0)[::-1]
-            try:
-                val = rev.decode('ascii', errors='ignore')
-                return val
-            except Exception:
-                try:
-                    return rev.decode('latin-1').strip()
-                except Exception:
-                    pass
-        # else fall back to any printable substring before quantum
-        printable = ''.join(chr(c) for c in before if 32 <= c < 127).strip()
-        if printable:
-            # try to pull last token
-            toks = re.findall(r'([0-9A-Za-z.\-+/]{1,64})', printable)
-            if toks:
-                return toks[-1]
+    s = s.strip()
+    # quick check: if string contains visible digits or slash (for bpm/spo2) accept
+    if re.search(r'\d', s):
+        # keep only reasonable chars
+        candidate = re.search(r'[-+]?\d{1,3}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?', s)
+        if candidate:
+            return candidate.group(0)
+        # else return cleaned alnum (short)
+        short = re.sub(r'[^0-9A-Za-z.\-+/]', '', s)
+        if short:
+            return short
 
-    # 3) numeric regex on whole plaintext
-    m_allnum = re.search(rb'(\d{1,3}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?)', pt_unp)
-    if m_allnum:
+    # 2) If no digits or decoding failed, try to extract numeric from bytes directly
+    m = re.search(rb'(\d{1,3}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?)', val_bytes)
+    if m:
         try:
-            return m_allnum.group(0).decode('ascii')
+            return m.group(0).decode('ascii')
         except Exception:
-            return m_allnum.group(0).decode('latin-1', errors='ignore')
+            return m.group(0).decode('latin-1', errors='ignore')
 
-    # 4) final printable fallback
-    printable_all = ''.join(chr(c) for c in pt_unp if 32 <= c < 127).strip()
-    return printable_all or "N/A"
+    # 3) printable ASCII fallback
+    printable = ''.join(chr(b) for b in val_bytes if 32 <= b < 127).strip()
+    printable = re.sub(r'\s+', ' ', printable)
+    if printable:
+        # trim to 64 chars
+        return printable[:64]
+    return "N/A"
 
-def decrypt_and_parse_field(field_value: str, key_hex: str, label: str):
+def find_quantum_hex_in_bytes(pt: bytes):
+    m = re.search(rb'([0-9a-fA-F]{32})', pt)
+    if m:
+        try:
+            return m.group(1).decode('ascii')
+        except Exception:
+            return None
+    return None
+
+def decrypt_field(field_value: str, key_hex: str, label: str):
     """
-    Returns (value_str, quantum_hex_or_None, error_or_None)
+    Returns (value_string, quantum_hex_or_None, error_or_None)
     """
     try:
-        iv_hex, cipher_hex = _safe_split_iv_cipher(field_value)
+        iv_hex, cipher_hex = find_iv_cipher(field_value)
         if not iv_hex or not cipher_hex:
             return None, None, "iv_or_cipher_not_found"
 
-        iv_hex = _only_hex(iv_hex)[:32]
-        cipher_hex = _only_hex(cipher_hex)
+        iv_hex = only_hex(iv_hex)[:32]
+        cipher_hex = only_hex(cipher_hex)
         if len(iv_hex) != 32 or len(cipher_hex) < 32:
-            return None, None, "invalid_hex_lengths"
+            return None, None, "invalid_hex_length"
 
         try:
             iv = unhexlify(iv_hex)
@@ -155,27 +135,24 @@ def decrypt_and_parse_field(field_value: str, key_hex: str, label: str):
         try:
             key = unhexlify(key_hex)
         except Exception as e:
-            return None, None, f"key_hex_error:{e}"
+            return None, None, f"key_decode_error:{e}"
 
         cipher = AES.new(key, AES.MODE_CBC, iv)
         pt = cipher.decrypt(ct)
-        pt_unp = _pkcs7_unpad(pt)
+        pt_unp = pkcs7_unpad(pt)
 
-        # find quantum 32hex in plaintext bytes
-        quantum = _find_32hex_in_bytes(pt_unp)
+        # pick value bytes before first '::' (operate at bytes level)
+        value_bytes = extract_first_token_from_bytes(pt_unp)
 
-        # value extraction from bytes
-        value = _extract_value_bytes(pt_unp, label)
+        # find quantum hex anywhere (32 hex)
+        quantum = find_quantum_hex_in_bytes(pt_unp)
 
-        # Special-case: if this is the Quantum Key field (Arduino encrypts "Q::challenge::quantum")
+        # decode and clean the value
+        value = decode_and_clean_value(value_bytes, label)
+
+        # special-case: Quantum Key field: return quantum hex if found, else the value
         if label.lower() == "quantum key":
-            # prefer the discovered quantum; else, if value is "Q" return quantum if present
-            if quantum:
-                return quantum, quantum, None
-            if value and value.upper() == "Q" and quantum:
-                return quantum, quantum, None
-            # fallback to value
-            return value or "N/A", quantum, None
+            return (quantum or value or "N/A"), quantum, None
 
         return value or "N/A", quantum, None
 
@@ -183,7 +160,6 @@ def decrypt_and_parse_field(field_value: str, key_hex: str, label: str):
         return None, None, str(e)
 
 
-# ThingSpeak fetch
 def fetch_thingspeak_latest():
     url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
     params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
@@ -232,17 +208,16 @@ def api_latest():
             decrypted[label] = "N/A"
             continue
 
-        value, quantum, error = decrypt_and_parse_field(raw, SERVER_AES_KEY_HEX, label)
+        value, quantum, error = decrypt_field(raw, SERVER_AES_KEY_HEX, label)
         if error:
-            logging.info(f"decrypt error for {fkey}/{label}: {error}")
+            logging.info(f"Decrypt error for {fkey} ({label}): {error}")
             decrypted[label] = "N/A"
             continue
 
-        # For Quantum Key field prefer the quantum hex itself
         if label == "Quantum Key":
             decrypted[label] = quantum or value or "N/A"
         else:
-            decrypted[label] = value or "N/A"
+            decrypted[label] = value
 
     return jsonify({
         "ok": True,
