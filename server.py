@@ -1,5 +1,5 @@
 from flask import Flask, jsonify, send_from_directory, request, abort
-import requests, base64, json, uuid, os
+import requests, os
 from binascii import unhexlify
 from Crypto.Cipher import AES
 from config import *
@@ -10,11 +10,11 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_FOLDER = os.path.abspath(os.path.join(BASE_DIR, "frontend"))
 
 if not os.path.exists(FRONTEND_FOLDER):
-    FRONTEND_FOLDER = os.path.abspath(os.path.join(BASE_DIR, "frontend"))  # fallback
+    FRONTEND_FOLDER = os.path.abspath(os.path.join(BASE_DIR, "frontend"))
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
-# --- AES decrypt helper (updated) ---
+# --- AES decrypt helper (robust) ---
 def aes_decrypt_hex(cipher_hex: str, key_hex: str) -> str:
     try:
         if ":" not in cipher_hex:
@@ -30,13 +30,13 @@ def aes_decrypt_hex(cipher_hex: str, key_hex: str) -> str:
         # Manual PKCS7 unpad
         pad_len = pt[-1]
         if pad_len < 1 or pad_len > AES.block_size:
-            return "bad_padding"
+            return "N/A"
         pt = pt[:-pad_len]
 
-        # Convert bytes to UTF-8 string
-        return pt.decode("utf-8")
-    except Exception as e:
-        return f"error:{e}"
+        # Decode as latin-1 to avoid UTF-8 decode errors
+        return pt.decode('latin-1').strip()
+    except Exception:
+        return "N/A"
 
 # --- Fetch latest ThingSpeak feed ---
 def fetch_thingspeak_latest():
@@ -83,7 +83,7 @@ def api_latest():
     for fkey, label in fields.items():
         raw = latest.get(fkey)
         if not raw:
-            decrypted[label] = "None"
+            decrypted[label] = "N/A"
             continue
         dec = aes_decrypt_hex(raw, SERVER_AES_KEY_HEX)
         decrypted[label] = dec
@@ -100,7 +100,7 @@ def api_latest():
 def serve_frontend(path):
     full_path = os.path.join(FRONTEND_FOLDER, path)
     if not os.path.exists(full_path):
-        path = "index.html"  # fallback to SPA root
+        path = "index.html"
     return send_from_directory(FRONTEND_FOLDER, path)
 
 # --- Run App ---
