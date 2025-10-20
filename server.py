@@ -22,7 +22,7 @@ if not os.path.exists(FRONTEND_FOLDER):
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
-# ===== AESLib-compatible decrypt =====
+# ===== AESLib-compatible CBC decrypt =====
 def aeslib_cbc_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
     key = unhexlify(key_hex)
     iv = unhexlify(iv_hex)
@@ -37,6 +37,7 @@ def aeslib_cbc_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
         plain_block = bytes(a ^ b for a, b in zip(dec, prev))
         out.extend(plain_block)
         prev = block
+    # PKCS7 unpad
     if len(out) == 0:
         return bytes(out)
     pad_len = out[-1]
@@ -44,6 +45,7 @@ def aeslib_cbc_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
         out = out[:-pad_len]
     return bytes(out)
 
+# ----- Helpers -----
 def strip_trailing_iv_from_cipher(ct_hex: str, iv_hex: str) -> str:
     if not ct_hex or not iv_hex:
         return ct_hex or ""
@@ -79,46 +81,33 @@ def extract_value_from_plaintext(pt_bytes: bytes, label: str):
     if label.lower() == 'quantum key':
         m = HEX_32_RE.search(text)
         if m:
-            return m.group(0), text
+            return m.group(0)
     if label.lower() == 'max30100':
         m = BPM_SPO2_RE.search(text)
         if m:
-            return f"{m.group(1)}/{m.group(2)}", text
+            return {"BPM": int(m.group(1)), "SpO2": float(m.group(2))}
     if label.lower() in ('temperature', 'humidity'):
         m = FLOAT_RE.search(text)
         if m:
-            return m.group(0), text
+            return float(m.group(0))
     if label.lower() == 'ir sensor':
         m = IR_RE.search(text)
         if m:
-            return m.group(1), text
-    if '::' in text:
-        parts = text.split('::')
-        return parts[0].strip(), text
+            return int(m.group(1))
+    # fallback: return printable ascii
     printable = ''.join(ch for ch in text if 32 <= ord(ch) <= 126)
-    if printable:
-        return printable.strip(), text
-    return None, text
+    return printable if printable else None
 
 def decrypt_thingspeak_field(field_hex: str, key_hex: str, label: str):
-    result = {"ok": False, "value": None, "raw": None, "error": None}
-    try:
-        if not field_hex or ":" not in field_hex:
-            result["error"] = "missing_field_or_iv"
-            return result
-        iv_hex, ct_hex = field_hex.split(":", 1)
-        ct_hex = strip_trailing_iv_from_cipher(ct_hex, iv_hex)
-        ct_hex = normalize_cipher_hex(ct_hex)
-        if not ct_hex:
-            result["error"] = "ciphertext_empty_after_clean"
-            return result
-        pt_bytes = aeslib_cbc_decrypt(iv_hex, ct_hex, key_hex)
-        val, raw_text = extract_value_from_plaintext(pt_bytes, label)
-        result.update({"ok": True, "value": val, "raw": raw_text})
-        return result
-    except Exception as e:
-        result["error"] = f"decrypt_exception:{e}"
-        return result
+    if not field_hex or ":" not in field_hex:
+        return None
+    iv_hex, ct_hex = field_hex.split(":", 1)
+    ct_hex = strip_trailing_iv_from_cipher(ct_hex, iv_hex)
+    ct_hex = normalize_cipher_hex(ct_hex)
+    if not ct_hex:
+        return None
+    pt_bytes = aeslib_cbc_decrypt(iv_hex, ct_hex, key_hex)
+    return extract_value_from_plaintext(pt_bytes, label)
 
 _cache = {"ts": 0, "data": None}
 
@@ -142,9 +131,11 @@ def api_latest():
         data = fetch_thingspeak_latest_cached()
     except Exception as e:
         return jsonify({"error": f"ThingSpeak fetch failed: {e}"}), 500
+
     feeds = data.get("feeds", [])
     if not feeds:
         return jsonify({"error": "No feed data"}), 404
+
     latest = feeds[-1]
     fields_map = {
         "field1": "Quantum Key",
@@ -153,19 +144,16 @@ def api_latest():
         "field4": "IR Sensor",
         "field5": "MAX30100",
     }
+
     out = {}
     for fk, label in fields_map.items():
         raw = latest.get(fk)
-        if not raw:
+        val = decrypt_thingspeak_field(raw, SERVER_AES_KEY_HEX, label)
+        if val is None:
             out[label] = "--"
-            continue
-        parsed = decrypt_thingspeak_field(raw, SERVER_AES_KEY_HEX, label)
-        val = parsed.get("value")
-        if not parsed.get("ok") or val is None:
-            out[label] = "--"
-            continue
-        # ensure all values are strings for frontend
-        out[label] = str(val)
+        else:
+            out[label] = val
+
     return jsonify({"ok": True, "decrypted": out, "timestamp": latest.get("created_at")})
 
 @app.route("/", defaults={"path": "index.html"})
