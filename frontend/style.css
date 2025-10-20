@@ -1,11 +1,13 @@
 body {
-  font-family: 'Arial', sans-serif;
-  background: linear-gradient(to bottom, #e0f7fa, #ffffff);
+  font-family: 'Segoe UI', Arial, sans-serif;
+  background: linear-gradient(to right, #e0f7fa, #f1f8e9);
+  color: #333;
   margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  color: #333;
+  transition: background 0.5s;
 }
 
 header {
@@ -13,92 +15,86 @@ header {
   color: #fff;
   padding: 1rem;
   text-align: center;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
-  animation: fadeInDown 1s ease;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.2);
 }
 
 main {
   flex: 1;
-  padding: 2rem;
+  padding: 1.5rem;
   display: flex;
   flex-direction: column;
   align-items: center;
+  gap: 2rem;
 }
 
 #status {
-  margin-bottom: 1rem;
   font-weight: bold;
   font-size: 1.1rem;
-  animation: fadeIn 1s ease;
+  margin-bottom: 1rem;
+  animation: fadeIn 1s;
 }
 
-.cards {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+.sensor-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 1rem;
-  margin-bottom: 2rem;
+  width: 100%;
+  max-width: 900px;
 }
 
 .card {
   background-color: #fff;
   border-radius: 12px;
-  padding: 1rem 1.5rem;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  padding: 1rem;
   text-align: center;
-  flex: 1 1 150px;
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  box-shadow: 0 6px 15px rgba(0,0,0,0.1);
+  transition: transform 0.3s, box-shadow 0.3s;
+  animation: slideUp 0.8s;
 }
 
 .card:hover {
   transform: translateY(-5px);
-  box-shadow: 0 6px 18px rgba(0,0,0,0.2);
+  box-shadow: 0 12px 20px rgba(0,0,0,0.2);
 }
 
-.card h2 {
-  margin: 0 0 0.5rem;
-  font-size: 1.1rem;
-  color: #0077cc;
-}
-
-.card p {
-  font-size: 1.3rem;
-  font-weight: bold;
-  margin: 0;
+.ir-indicator {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  margin: 0 auto;
+  background-color: gray;
+  transition: background-color 0.5s;
 }
 
 .charts {
-  width: 90%;
-  max-width: 900px;
-  margin-bottom: 2rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2rem;
+  width: 100%;
 }
 
 canvas {
-  background-color: #fff;
+  background: #fff;
   border-radius: 12px;
   padding: 1rem;
-  margin-bottom: 2rem;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-}
-
-#timestamp {
-  font-size: 0.9rem;
-  color: #555;
-  margin-top: 1rem;
+  box-shadow: 0 6px 15px rgba(0,0,0,0.1);
+  max-width: 400px;
 }
 
 footer {
   background-color: #eee;
   text-align: center;
   padding: 0.5rem;
+  box-shadow: 0 -2px 8px rgba(0,0,0,0.1);
 }
 
 @keyframes fadeIn {
-  0% {opacity:0;}
-  100% {opacity:1;}
+  0% {opacity: 0;}
+  100% {opacity: 1;}
 }
 
-@keyframes fadeInDown {
-  0% {opacity:0; transform: translateY(-20px);}
-  100% {opacity:1; transform: translateY(0);}
+@keyframes slideUp {
+  0% {opacity: 0; transform: translateY(30px);}
+  100% {opacity: 1; transform: translateY(0);}
 }
