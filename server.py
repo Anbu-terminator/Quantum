@@ -1,6 +1,6 @@
 # server.py
 from flask import Flask, jsonify, send_from_directory, request, abort
-import requests, os
+import requests, os, time
 from binascii import unhexlify
 from Crypto.Cipher import AES
 from config import *
@@ -31,7 +31,7 @@ def aeslib_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
         dec_block = ecb.decrypt(block)
         plain_block = bytes(a ^ b for a, b in zip(dec_block, prev))
         out += plain_block
-        prev = block
+        prev = block  # CBC chain
 
     # Remove PKCS#7 padding
     pad_len = out[-1]
@@ -49,9 +49,11 @@ def aes_decrypt_and_clean(cipher_hex: str, key_hex: str, label: str):
 
         iv_hex, ct_hex = cipher_hex.split(":", 1)
         pt_bytes = aeslib_decrypt(iv_hex, ct_hex, key_hex)
-        raw_text = pt_bytes.decode("latin-1", errors="ignore").strip()
 
-        # Extract format: <value>::<challenge>::<quantum_hex>
+        # Decode using UTF-8 replacement to avoid garbage
+        raw_text = pt_bytes.decode("utf-8", errors="replace").strip()
+
+        # Extract <value>::<challenge>::<quantum_hex>
         parts = raw_text.split("::")
         value, quantum = "N/A", None
         if len(parts) >= 3:
@@ -60,7 +62,7 @@ def aes_decrypt_and_clean(cipher_hex: str, key_hex: str, label: str):
         elif len(parts) == 1:
             value = parts[0].strip()
 
-        # Keep printable characters only (preserves dots, colons, slash, numbers)
+        # Keep only printable characters (numbers, letters, dot, slash, colon, dash)
         value = "".join(c for c in value if c.isprintable())
 
         # Quantum Key field uses the quantum hex
@@ -70,23 +72,29 @@ def aes_decrypt_and_clean(cipher_hex: str, key_hex: str, label: str):
         out["ok"] = True
         out["value"] = value
         out["quantum"] = quantum
-
-        # Optional debug
-        print(f"DEBUG {label}: raw_text='{raw_text}', value='{value}', quantum='{quantum}'")
-
         return out
 
     except Exception as e:
         out["error"] = str(e)
         return out
 
-# --- Fetch latest ThingSpeak feed ---
-def fetch_thingspeak_latest():
+# --- Cached ThingSpeak fetch ---
+CACHE_DURATION = 10  # seconds
+_cache = {"timestamp": 0, "data": None}
+
+def fetch_thingspeak_latest_cached():
+    now = time.time()
+    if _cache["data"] is not None and (now - _cache["timestamp"]) < CACHE_DURATION:
+        return _cache["data"]
+    # Fetch fresh
     url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
     params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
     r = requests.get(url, params=params, timeout=10)
     r.raise_for_status()
-    return r.json()
+    data = r.json()
+    _cache["timestamp"] = now
+    _cache["data"] = data
+    return data
 
 # --- API: Quantum Key Generator ---
 @app.route("/quantum", methods=["GET"])
@@ -105,7 +113,7 @@ def api_latest():
         abort(401)
 
     try:
-        data = fetch_thingspeak_latest()
+        data = fetch_thingspeak_latest_cached()
     except Exception as e:
         return jsonify({"error": f"ThingSpeak fetch failed: {e}"}), 500
 
