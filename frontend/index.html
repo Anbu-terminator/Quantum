@@ -15,33 +15,33 @@
   <main>
     <div id="status">Connecting to backend...</div>
 
-    <div class="cards">
+    <div class="sensor-cards">
       <div class="card">
-        <h2>Temperature</h2>
-        <p id="field2">-- °C</p>
-      </div>
-      <div class="card">
-        <h2>Humidity</h2>
-        <p id="field3">-- %</p>
-      </div>
-      <div class="card">
-        <h2>IR Sensor</h2>
-        <p id="field4">--</p>
-      </div>
-      <div class="card">
-        <h2>Quantum Key</h2>
+        <h3>Quantum Key</h3>
         <p id="field1">--</p>
       </div>
       <div class="card">
-        <h2>MAX30100</h2>
+        <h3>Temperature (°C)</h3>
+        <p id="field2">--</p>
+      </div>
+      <div class="card">
+        <h3>Humidity (%)</h3>
+        <p id="field3">--</p>
+      </div>
+      <div class="card">
+        <h3>IR Sensor</h3>
+        <div id="field4" class="ir-indicator">--</div>
+      </div>
+      <div class="card">
+        <h3>MAX30100</h3>
         <p id="field5">--</p>
       </div>
     </div>
 
     <div class="charts">
       <canvas id="tempChart"></canvas>
-      <canvas id="humidityChart"></canvas>
-      <canvas id="maxChart"></canvas>
+      <canvas id="humChart"></canvas>
+      <canvas id="bpmChart"></canvas>
     </div>
 
     <div id="timestamp"></div>
