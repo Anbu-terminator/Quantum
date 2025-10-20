@@ -1,59 +1,129 @@
+/* Reset & base */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
 body {
-    font-family: Arial, sans-serif;
-    background-color: #f5f5f5;
-    color: #333;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    min-height: 100vh;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  background: linear-gradient(to bottom right, #e0f7fa, #ffffff);
+  color: #333;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
 }
 
+/* Header */
 header {
-    background-color: #0077cc;
-    color: #fff;
-    padding: 1rem;
-    text-align: center;
+  background: #0077cc;
+  color: #fff;
+  padding: 1.2rem;
+  text-align: center;
+  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
 }
 
+/* Main content */
 main {
-    flex: 1;
-    padding: 2rem;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
+  flex: 1;
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
-#status {
-    margin-bottom: 1rem;
-    font-weight: bold;
+/* Status */
+.status {
+  font-weight: bold;
+  margin-bottom: 1.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
+  transition: all 0.3s ease;
 }
 
-table {
-    border-collapse: collapse;
-    width: 90%;
-    max-width: 600px;
-    background-color: #fff;
-    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+.status.connecting {
+  background: #fff3cd;
+  color: #856404;
 }
 
-th, td {
-    border: 1px solid #ddd;
-    padding: 0.75rem;
-    text-align: center;
+.status.connected {
+  background: #d4edda;
+  color: #155724;
 }
 
-th {
-    background-color: #0077cc;
-    color: #fff;
+.status.error {
+  background: #f8d7da;
+  color: #721c24;
 }
 
-td {
-    font-weight: bold;
+/* Sensor cards container */
+.card-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1.2rem;
+  width: 100%;
+  max-width: 900px;
+  margin-bottom: 2rem;
 }
 
+/* Individual sensor cards */
+.sensor-card {
+  background: #ffffffcc;
+  backdrop-filter: blur(5px);
+  border-radius: 12px;
+  padding: 1rem;
+  text-align: center;
+  box-shadow: 0 6px 15px rgba(0,0,0,0.1);
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+}
+
+.sensor-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 12px 20px rgba(0,0,0,0.2);
+}
+
+.sensor-card h2 {
+  font-size: 1.1rem;
+  margin-bottom: 0.5rem;
+  color: #0077cc;
+}
+
+.sensor-card p {
+  font-size: 1.3rem;
+  font-weight: bold;
+  color: #333;
+  transition: color 0.3s ease;
+}
+
+/* Color cues for special sensors */
+#card4 p { /* IR Sensor */
+  color: gray;
+}
+
+#card4 p.active {
+  color: red;
+  font-weight: bold;
+}
+
+/* Timestamp */
+.timestamp {
+  font-size: 0.9rem;
+  color: #555;
+  margin-top: 1rem;
+}
+
+/* Footer */
 footer {
-    background-color: #eee;
-    text-align: center;
-    padding: 0.5rem;
+  background-color: #eee;
+  text-align: center;
+  padding: 0.7rem;
+  font-size: 0.9rem;
+  color: #333;
+}
+
+/* Responsive tweaks */
+@media (max-width: 600px) {
+  main {
+    padding: 1rem;
+  }
 }
