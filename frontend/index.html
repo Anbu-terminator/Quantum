@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Q-SENSE Dashboard</title>
   <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
   <header>
@@ -12,36 +13,42 @@
   </header>
 
   <main>
-    <div id="status" class="status connecting">Connecting to backend...</div>
+    <div id="status">Connecting to backend...</div>
 
-    <div class="card-container">
-      <div class="sensor-card" id="card1">
-        <h2>Quantum Key</h2>
-        <p id="field1">--</p>
-      </div>
-      <div class="sensor-card" id="card2">
+    <div class="cards">
+      <div class="card">
         <h2>Temperature</h2>
-        <p id="field2">--</p>
+        <p id="field2">-- °C</p>
       </div>
-      <div class="sensor-card" id="card3">
+      <div class="card">
         <h2>Humidity</h2>
-        <p id="field3">--</p>
+        <p id="field3">-- %</p>
       </div>
-      <div class="sensor-card" id="card4">
+      <div class="card">
         <h2>IR Sensor</h2>
         <p id="field4">--</p>
       </div>
-      <div class="sensor-card" id="card5">
+      <div class="card">
+        <h2>Quantum Key</h2>
+        <p id="field1">--</p>
+      </div>
+      <div class="card">
         <h2>MAX30100</h2>
         <p id="field5">--</p>
       </div>
     </div>
 
-    <div id="timestamp" class="timestamp">Last updated: --</div>
+    <div class="charts">
+      <canvas id="tempChart"></canvas>
+      <canvas id="humidityChart"></canvas>
+      <canvas id="maxChart"></canvas>
+    </div>
+
+    <div id="timestamp"></div>
   </main>
 
   <footer>
-    <p>Powered by Q-SENSE &copy; 2025</p>
+    <p>Powered by Q-SENSE</p>
   </footer>
 
   <script src="script.js"></script>
