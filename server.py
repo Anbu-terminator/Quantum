@@ -23,13 +23,12 @@ def aeslib_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
     iv = unhexlify(iv_hex)
     ct = unhexlify(ct_hex)
 
-    # AESLib encrypts in ECB and manually XORs IV
     ecb = AES.new(key, AES.MODE_ECB)
     block_size = 16
     out = b""
     prev = iv
 
-    # Manual CBC decryption (inverse of AESLib.encrypt)
+    # Manual CBC decryption
     for i in range(0, len(ct), block_size):
         block = ct[i:i+block_size]
         dec_block = ecb.decrypt(block)
@@ -43,7 +42,7 @@ def aeslib_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
         out = out[:-pad_len]
     return out
 
-
+# ---------- AES Decrypt and Clean ----------
 def aes_decrypt_and_clean(cipher_hex: str, key_hex: str, label: str):
     out = {"ok": False, "value": "N/A", "quantum": None, "error": None}
     try:
@@ -64,22 +63,25 @@ def aes_decrypt_and_clean(cipher_hex: str, key_hex: str, label: str):
         elif len(parts) == 1:
             value = parts[0].strip()
 
-        # Clean value if numeric-like
-        value = re.sub(r"[^0-9A-Za-z./-]", "", value)
+        # Keep only printable characters (don't strip colon or slash)
+        value = "".join(c for c in value if c.isprintable())
 
-        # Special case: Quantum Key field
+        # Quantum Key field uses the quantum hex
         if label.lower() == "quantum key":
             value = quantum or value
 
         out["ok"] = True
         out["value"] = value
         out["quantum"] = quantum
+
+        # Debugging output (optional)
+        print(f"DEBUG {label}: raw_text='{raw_text}', value='{value}', quantum='{quantum}'")
+
         return out
 
     except Exception as e:
         out["error"] = str(e)
         return out
-
 
 # --- Fetch latest ThingSpeak feed ---
 def fetch_thingspeak_latest():
@@ -88,7 +90,6 @@ def fetch_thingspeak_latest():
     r = requests.get(url, params=params, timeout=10)
     r.raise_for_status()
     return r.json()
-
 
 # --- API: Quantum Key Generator ---
 @app.route("/quantum", methods=["GET"])
@@ -99,7 +100,6 @@ def api_quantum():
     n = int(request.args.get("n", 16))
     q_hex = get_quantum_challenge(n)
     return jsonify({"ok": True, "quantum_hex": q_hex})
-
 
 # --- API: Decrypt latest ThingSpeak feed ---
 @app.route("/api/latest", methods=["GET"])
@@ -141,7 +141,6 @@ def api_latest():
         "timestamp": latest.get("created_at")
     })
 
-
 # --- Serve frontend ---
 @app.route("/", defaults={"path": "index.html"})
 @app.route("/<path:path>")
@@ -150,7 +149,6 @@ def serve_frontend(path):
     if not os.path.exists(full_path):
         path = "index.html"
     return send_from_directory(FRONTEND_FOLDER, path)
-
 
 # --- Run App ---
 if __name__ == "__main__":
