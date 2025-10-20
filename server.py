@@ -44,9 +44,7 @@ def aes_decrypt_field(cipher_hex: str, key_hex: str, label: str):
             return out
         iv_hex, ct_hex = cipher_hex.split(":", 1)
         pt_bytes = aeslib_decrypt(iv_hex, ct_hex, key_hex)
-        # Decode as latin-1 to get raw ASCII
         raw_text = pt_bytes.decode("latin-1", errors="ignore").strip()
-        # Split Arduino format value::challenge::quantum_hex
         parts = raw_text.split("::")
         value = parts[0].strip() if len(parts) >= 1 else "N/A"
         quantum = parts[-1].strip() if len(parts) >=3 else None
@@ -111,10 +109,26 @@ def api_latest():
     for fkey, label in fields.items():
         raw = latest.get(fkey)
         if not raw:
-            decrypted[label] = "N/A"
+            decrypted[label] = None
             continue
         parsed = aes_decrypt_field(raw, SERVER_AES_KEY_HEX, label)
-        val = parsed["value"] if parsed["ok"] else f"error:{parsed['error']}"
+        val = parsed["value"] if parsed["ok"] else None
+
+        # Post-process values
+        if label in ["Temperature", "Humidity"]:
+            try:
+                val = float(val)
+            except:
+                val = None
+        elif label == "IR Sensor":
+            val = "1" if val == "1" else "0"
+        elif label == "MAX30100":
+            try:
+                bpm, spo2 = val.split("/")
+                val = {"BPM": int(bpm), "SpO2": float(spo2)}
+            except:
+                val = None
+
         decrypted[label] = val
 
     return jsonify({
