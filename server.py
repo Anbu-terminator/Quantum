@@ -1,4 +1,3 @@
-# server.py
 from flask import Flask, jsonify, send_from_directory, request, abort
 import requests, os, time
 from binascii import unhexlify
@@ -6,64 +5,75 @@ from Crypto.Cipher import AES
 from config import *
 from quantum_key import get_quantum_challenge
 
-# --- Frontend folder ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_FOLDER = os.path.join(BASE_DIR, "frontend")
 if not os.path.exists(FRONTEND_FOLDER):
-    FRONTEND_FOLDER = os.path.join(BASE_DIR, "frontend")
+    os.makedirs(FRONTEND_FOLDER)
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
-# ---------- AESLib CBC Decryption ----------
-def aeslib_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
+# ---------------- AESLib-Compatible Decryption ----------------
+def aeslib_cbc_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
+    """Exact reverse of AESLib.encrypt() on Arduino."""
     key = unhexlify(key_hex)
     iv = unhexlify(iv_hex)
-    ct = unhexlify(ct_hex)
-    ecb = AES.new(key, AES.MODE_ECB)
+    ciphertext = unhexlify(ct_hex)
+
     block_size = 16
+    cipher_ecb = AES.new(key, AES.MODE_ECB)
+
     out = b""
     prev = iv
-    for i in range(0, len(ct), block_size):
-        block = ct[i:i+block_size]
-        dec_block = ecb.decrypt(block)
+    for i in range(0, len(ciphertext), block_size):
+        block = ciphertext[i:i + block_size]
+        dec_block = cipher_ecb.decrypt(block)
         plain_block = bytes(a ^ b for a, b in zip(dec_block, prev))
         out += plain_block
         prev = block
-    # Remove PKCS#7 padding
+
+    # remove PKCS#7 padding
     pad_len = out[-1]
     if 1 <= pad_len <= 16:
         out = out[:-pad_len]
     return out
 
-# ---------- Decrypt field ----------
-def aes_decrypt_field(cipher_hex: str, key_hex: str, label: str):
-    out = {"ok": False, "value": None, "quantum": None, "error": None}
+def decrypt_field(cipher_hex: str, key_hex: str, label: str):
+    result = {"ok": False, "value": None, "quantum": None, "error": None}
     try:
         if ":" not in cipher_hex:
-            out["error"] = "invalid_format"
-            return out
+            result["error"] = "invalid_format"
+            return result
         iv_hex, ct_hex = cipher_hex.split(":", 1)
-        pt_bytes = aeslib_decrypt(iv_hex, ct_hex, key_hex)
-        raw_text = pt_bytes.decode("latin-1", errors="ignore").strip()
-        parts = raw_text.split("::")
-        value = parts[0].strip() if len(parts) >= 1 else "N/A"
-        quantum = parts[-1].strip() if len(parts) >=3 else None
+        pt_bytes = aeslib_cbc_decrypt(iv_hex, ct_hex, key_hex)
+        try:
+            text = pt_bytes.decode("utf-8").strip()
+        except UnicodeDecodeError:
+            text = pt_bytes.decode("latin-1", errors="ignore").strip()
+
+        # expected format: value::challenge::quantum
+        parts = text.split("::")
+        value = parts[0].strip() if len(parts) >= 1 else None
+        quantum = parts[-1].strip() if len(parts) >= 3 else None
+
         if label.lower() == "quantum key":
             value = quantum or value
-        out.update({"ok": True, "value": value, "quantum": quantum})
-        return out
-    except Exception as e:
-        out["error"] = str(e)
-        return out
 
-# --- Cached ThingSpeak fetch ---
-CACHE_DURATION = 10  # seconds
+        result.update({"ok": True, "value": value, "quantum": quantum})
+        return result
+    except Exception as e:
+        result["error"] = str(e)
+        return result
+
+
+# ---------------- ThingSpeak Cached Fetch ----------------
+CACHE_DURATION = 10
 _cache = {"timestamp": 0, "data": None}
 
 def fetch_thingspeak_latest_cached():
     now = time.time()
     if _cache["data"] and (now - _cache["timestamp"]) < CACHE_DURATION:
         return _cache["data"]
+
     url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
     params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
     r = requests.get(url, params=params, timeout=10)
@@ -72,7 +82,8 @@ def fetch_thingspeak_latest_cached():
     _cache.update({"timestamp": now, "data": data})
     return data
 
-# --- Quantum key endpoint ---
+
+# ---------------- Flask Endpoints ----------------
 @app.route("/quantum", methods=["GET"])
 def api_quantum():
     token = request.args.get("token")
@@ -82,7 +93,7 @@ def api_quantum():
     q_hex = get_quantum_challenge(n)
     return jsonify({"ok": True, "quantum_hex": q_hex})
 
-# --- Latest decrypted feed endpoint ---
+
 @app.route("/api/latest", methods=["GET"])
 def api_latest():
     if request.args.get("auth") != ESP_AUTH_TOKEN:
@@ -109,17 +120,17 @@ def api_latest():
     for fkey, label in fields.items():
         raw = latest.get(fkey)
         if not raw:
-            decrypted[label] = None
+            decrypted[label] = "N/A"
             continue
-        parsed = aes_decrypt_field(raw, SERVER_AES_KEY_HEX, label)
-        val = parsed["value"] if parsed["ok"] else None
+        parsed = decrypt_field(raw, SERVER_AES_KEY_HEX, label)
+        val = parsed["value"] if parsed["ok"] else "N/A"
 
-        # Post-process values
+        # Data post-processing
         if label in ["Temperature", "Humidity"]:
             try:
                 val = float(val)
             except:
-                val = None
+                pass
         elif label == "IR Sensor":
             val = "1" if val == "1" else "0"
         elif label == "MAX30100":
@@ -127,7 +138,7 @@ def api_latest():
                 bpm, spo2 = val.split("/")
                 val = {"BPM": int(bpm), "SpO2": float(spo2)}
             except:
-                val = None
+                val = val
 
         decrypted[label] = val
 
@@ -137,7 +148,7 @@ def api_latest():
         "timestamp": latest.get("created_at")
     })
 
-# --- Serve frontend ---
+
 @app.route("/", defaults={"path": "index.html"})
 @app.route("/<path:path>")
 def serve_frontend(path):
@@ -145,9 +156,8 @@ def serve_frontend(path):
         path = "index.html"
     return send_from_directory(FRONTEND_FOLDER, path)
 
-# --- Run App ---
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"✅ Q-SENSE running at http://127.0.0.1:{port}")
-    print(f"📁 Serving frontend from: {FRONTEND_FOLDER}")
+    print(f"✅ Q-SENSE running on http://127.0.0.1:{port}")
     app.run(host="0.0.0.0", port=port, debug=True)
