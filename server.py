@@ -1,22 +1,24 @@
 # server.py
 import os
-import time
 import re
+import time
 from binascii import unhexlify
-from typing import Tuple, Optional
 
 import requests
 from flask import Flask, jsonify, send_from_directory, request, abort
 from Crypto.Cipher import AES
 
-# Load user's config.py which must define:
-# THINGSPEAK_CHANNEL_ID, THINGSPEAK_READ_KEY, SERVER_AES_KEY_HEX, ESP_AUTH_TOKEN
+# load config from config.py (must provide these variables)
 try:
     from config import *
 except Exception as e:
-    raise RuntimeError("Provide config.py with THINGSPEAK_CHANNEL_ID, THINGSPEAK_READ_KEY, SERVER_AES_KEY_HEX, ESP_AUTH_TOKEN") from e
+    raise RuntimeError("Please provide config.py with THINGSPEAK_CHANNEL_ID, THINGSPEAK_READ_KEY, SERVER_AES_KEY_HEX, ESP_AUTH_TOKEN") from e
 
-# ---------- Basic app + frontend setup ----------
+# ----- settings -----
+CACHE_DURATION = 10  # seconds
+DEBUG = False
+
+# ----- flask / frontend setup -----
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_FOLDER = os.path.join(BASE_DIR, "frontend")
 if not os.path.exists(FRONTEND_FOLDER):
@@ -24,122 +26,159 @@ if not os.path.exists(FRONTEND_FOLDER):
 
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
-# ---------- Utils: AESLib-compatible CBC decryption ----------
+# ===== AESLib-compatible CBC decrypt (reverse of AESLib.encrypt) =====
 def aeslib_cbc_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
     """
-    Reverse of AESLib.encrypt() behaviour used on the Arduino:
-      - AES-128 ECB per-block decrypt, then XOR with previous ciphertext (CBC manual).
-      - Remove PKCS#7 padding if present.
-    Returns plaintext bytes.
+    Exact inverse of AESLib.encrypt used on Arduino:
+    - key_hex, iv_hex and ct_hex are hex strings (no 0x)
+    - returns plaintext bytes with PKCS#7 padding removed
     """
     key = unhexlify(key_hex)
     iv = unhexlify(iv_hex)
-    ct = unhexlify(ct_hex)
+    ciphertext = unhexlify(ct_hex)
 
     cipher_ecb = AES.new(key, AES.MODE_ECB)
     out = bytearray()
     prev = iv
     block_size = 16
 
-    for i in range(0, len(ct), block_size):
-        block = ct[i:i+block_size]
+    for i in range(0, len(ciphertext), block_size):
+        block = ciphertext[i:i + block_size]
         dec = cipher_ecb.decrypt(block)
         plain_block = bytes(a ^ b for a, b in zip(dec, prev))
         out.extend(plain_block)
         prev = block
 
-    # PKCS#7 unpad if valid
+    # PKCS#7 unpad (safe)
     if len(out) == 0:
         return bytes(out)
     pad_len = out[-1]
-    if 1 <= pad_len <= 16 and out[-pad_len:] == bytes([pad_len]) * pad_len:
-        out = out[:-pad_len]
+    if 1 <= pad_len <= 16 and pad_len <= len(out):
+        if out[-pad_len:] == bytes([pad_len]) * pad_len:
+            out = out[:-pad_len]
     return bytes(out)
 
-# Helpers to clean / normalize ciphertext hex
-def strip_trailing_iv(ct_hex: str, iv_hex: str) -> str:
-    """If ct_hex ends with iv_hex repeated, remove those trailing copies."""
+# ----- Helpers for ThingSpeak ciphertext cleaning -----
+def strip_trailing_iv_from_cipher(ct_hex: str, iv_hex: str) -> str:
+    """If ciphertext hex ends with repeated iv hex blocks, strip them."""
+    if not ct_hex or not iv_hex:
+        return ct_hex or ""
     ct = ct_hex.strip().lower()
     iv = iv_hex.strip().lower()
-    if not ct or not iv:
-        return ct
-    while ct.endswith(iv):
+    # remove non-hex chars
+    ct = re.sub(r'[^0-9a-f]', '', ct)
+    iv = re.sub(r'[^0-9a-f]', '', iv)
+    while iv and ct.endswith(iv):
         ct = ct[:-len(iv)]
     return ct
 
 def normalize_cipher_hex(ct_hex: str) -> str:
-    s = re.sub(r"[^0-9a-fA-F]", "", ct_hex)
-    if len(s) % 2 == 1:
+    """Sanitize hex string: keep hex chars, make even length, trim to block size."""
+    s = re.sub(r'[^0-9a-fA-F]', '', (ct_hex or ""))
+    if len(s) % 2 != 0:
         s = s[:-1]
-    # trim to full AES blocks (16 bytes -> 32 hex chars)
-    rem = len(s) % 32
+    # ensure ciphertext length is multiple of 16 bytes (32 hex chars)
+    rem = len(s) % (16 * 2)
     if rem != 0:
-        s = s[:-rem]
+        s = s[: -rem]
     return s
 
-# ---------- Heuristic parsing of plaintext ----------
-HEX_RE = re.compile(r"[0-9a-fA-F]{32,}")                     # long hex (quantum key)
-NUM_RE = re.compile(r"[-+]?\d*\.\d+|\d+")                    # first number (temp/hum/bpm)
-BPM_SPO2_RE = re.compile(r"(\d{1,3})\s*/\s*(\d{1,3}(?:\.\d+)?)")  # bpm/spo2
+# ===== Value extraction from decrypted bytes =====
+# We'll attempt multiple strategies to reliably extract sensor values from decrypted bytes:
+# - find MAX30100 pattern: bpm/spo2 (e.g. "72/98.5")
+# - find float-like number for temperature/humidity
+# - find standalone "0" or "1" for IR
+# - find a long hex string for quantum key
+HEX_32_RE = re.compile(r'[0-9a-fA-F]{24,64}')  # quantum key-like
+BPM_SPO2_RE = re.compile(r'(\d{1,3})\s*/\s*([0-9]{1,3}(?:\.[0-9]+)?)')
+FLOAT_RE = re.compile(r'[-+]?\d*\.\d+|\d+')
+IR_RE = re.compile(r'\b([01])\b')
 
-def extract_value_from_plaintext(pt_bytes: bytes) -> Tuple[Optional[str], Optional[str]]:
+def extract_value_from_plaintext(pt_bytes: bytes, label: str):
     """
-    Attempts to extract (value, quantum_hex) from plaintext bytes.
-    Returns raw string value and quantum hex (if found).
-    Uses several fallbacks:
-     - split by '::' if present
-     - otherwise look for long trailing hex (quantum)
-     - attempt to extract numeric tokens if leading bytes contain noise
+    Given plaintext bytes, extract the likely value for the given label.
+    Returns (extracted_value_as_string_or_None, raw_text_for_debug)
     """
-    # try decode utf-8 first, else latin-1
+    # First try safe decodes:
     try:
-        text = pt_bytes.decode("utf-8")
+        text_utf8 = pt_bytes.decode('utf-8', errors='ignore')
     except Exception:
-        text = pt_bytes.decode("latin-1", errors="ignore")
+        text_utf8 = ''
+    text_l1 = pt_bytes.decode('latin-1', errors='ignore')
+    # Prefer the representation that contains the separator :: if present
+    text = text_utf8 if '::' in text_utf8 else text_l1
+    text = text.strip()
 
-    # Trim NULs and whitespace
-    text = text.strip("\x00 \r\n\t")
+    # If label is Quantum Key, try extracting a long hex substring
+    if label.lower() == 'quantum key':
+        m = HEX_32_RE.search(text)
+        if m:
+            return m.group(0), text
 
-    # 1) if Arduino-format present, take split
-    if "::" in text:
-        parts = text.split("::")
-        value = parts[0].strip() if len(parts) >= 1 else None
-        quantum = parts[-1].strip() if len(parts) >= 3 else None
-        return value or None, quantum or None
+    # MAX30100 (bpm/spo2)
+    if label.lower() == 'max30100':
+        m = BPM_SPO2_RE.search(text)
+        if m:
+            bpm = m.group(1)
+            spo2 = m.group(2)
+            return f"{bpm}/{spo2}", text
 
-    # 2) look for a trailing long hex sequence (quantum) and take preceding printable tail as value
-    m_hex = HEX_RE.search(text)
-    quantum = m_hex.group(0) if m_hex else None
-    if quantum:
-        # take substring before hex occurrence
-        idx = text.find(quantum)
-        head = text[:idx].strip()
-        # find last printable chunk in head
-        printable_tail = re.findall(r"[ -~]+", head)  # ascii printable runs
-        value = printable_tail[-1].strip() if printable_tail else None
-        return value or None, quantum
+    # Temperature / Humidity: find first float-like number
+    if label.lower() in ('temperature', 'humidity'):
+        m = FLOAT_RE.search(text)
+        if m:
+            return m.group(0), text
 
-    # 3) try BPM/SpO2 pattern anywhere
-    m_bs = BPM_SPO2_RE.search(text)
-    if m_bs:
-        bpm = m_bs.group(1)
-        spo2 = m_bs.group(2)
-        return f"{bpm}/{spo2}", None
+    # IR Sensor: look for '0' or '1'
+    if label.lower() == 'ir sensor':
+        m = IR_RE.search(text)
+        if m:
+            return m.group(1), text
 
-    # 4) fallback: find first number-like substring (useful for temp/hum)
-    m_num = NUM_RE.search(text)
-    if m_num:
-        return m_num.group(0), None
-
-    # 5) final fallback: return visible printable characters if any
-    printable = "".join(ch for ch in text if 32 <= ord(ch) <= 126)
+    # Fallbacks:
+    # - If text includes "::", split and take first part
+    if '::' in text:
+        parts = text.split('::')
+        return parts[0].strip(), text
+    # - find first printable run of ascii characters (letters/digits/./-/)
+    printable = ''.join(ch for ch in text if 32 <= ord(ch) <= 126)
     if printable:
-        return printable.strip(), None
+        return printable.strip(), text
 
-    return None, None
+    # Nothing found
+    return None, text
 
-# ---------- ThingSpeak cached fetch ----------
-CACHE_DURATION = 10  # seconds
+# ===== Decrypt one TS field (iv:ct) and parse value =====
+def decrypt_thingspeak_field(field_hex: str, key_hex: str, label: str):
+    """
+    Returns dict: {"ok": True/False, "value": <extracted or None>, "raw": <decoded text>, "error": <str>}
+    """
+    result = {"ok": False, "value": None, "raw": None, "error": None}
+    try:
+        if not field_hex or ":" not in field_hex:
+            result["error"] = "missing_field_or_iv"
+            return result
+
+        iv_hex, ct_hex = field_hex.split(":", 1)
+        # strip trailing IV copies
+        ct_hex = strip_trailing_iv_from_cipher(ct_hex, iv_hex)
+        ct_hex = normalize_cipher_hex(ct_hex)
+        if not ct_hex:
+            result["error"] = "ciphertext_empty_after_clean"
+            return result
+
+        # perform AESLib-style decrypt
+        pt_bytes = aeslib_cbc_decrypt(iv_hex, ct_hex, key_hex)
+
+        # Extract
+        val, raw_text = extract_value_from_plaintext(pt_bytes, label)
+        result.update({"ok": True, "value": val, "raw": raw_text})
+        return result
+    except Exception as e:
+        result["error"] = f"decrypt_exception:{e}"
+        return result
+
+# ===== ThingSpeak cached fetch =====
 _cache = {"ts": 0, "data": None}
 
 def fetch_thingspeak_latest_cached():
@@ -154,86 +193,19 @@ def fetch_thingspeak_latest_cached():
     _cache.update({"ts": now, "data": data})
     return data
 
-# ---------- Decrypt one field robustly ----------
-def decrypt_field_robust(field_hex: str, key_hex: str, label: str):
-    """
-    Returns dict: {'ok': bool, 'value': <str|None>, 'quantum': <str|None>, 'error': <str|None>}
-    """
-    out = {"ok": False, "value": None, "quantum": None, "error": None}
-
-    if not field_hex or ":" not in field_hex:
-        out["error"] = "invalid_field_format"
-        return out
-
-    iv_hex, ct_hex = field_hex.split(":", 1)
-
-    # Observed ThingSpeak sometimes appends IV hex to the end; remove trailing copies
-    ct_hex_stripped = strip_trailing_iv(ct_hex, iv_hex)
-    ct_norm = normalize_cipher_hex(ct_hex_stripped)
-
-    if not ct_norm:
-        out["error"] = "ciphertext_empty_after_normalize"
-        return out
-
-    try:
-        pt = aeslib_cbc_decrypt(iv_hex, ct_norm, key_hex)
-    except Exception as e:
-        out["error"] = f"decrypt_exception:{e}"
-        return out
-
-    value, quantum = extract_value_from_plaintext(pt)
-
-    # Final cleanups
-    if value is not None:
-        value = value.strip()
-        if value == "":
-            value = None
-    if quantum is not None:
-        quantum = quantum.strip()
-        if quantum == "":
-            quantum = None
-
-    out.update({"ok": True, "value": value, "quantum": quantum})
-    return out
-
-# ---------- Small helpers to turn sensor value types ----------
-def parse_numeric(value: Optional[str]) -> Optional[float]:
-    if value is None:
-        return None
-    m = re.search(r"[-+]?\d*\.\d+|\d+", value)
-    if not m:
-        return None
-    try:
-        return float(m.group(0))
-    except:
-        return None
-
-def parse_bpm_spo2(value: Optional[str]):
-    if not value:
-        return None
-    m = re.search(r"(\d{1,3})\s*/\s*(\d{1,3}(?:\.\d+)?)", value)
-    if not m:
-        return None
-    try:
-        return {"BPM": int(m.group(1)), "SpO2": float(m.group(2))}
-    except:
-        return None
-
-# ---------- Flask endpoints ----------
+# ===== Flask endpoints =====
 @app.route("/quantum", methods=["GET"])
 def api_quantum():
     token = request.args.get("token")
     if token != ESP_AUTH_TOKEN:
         abort(401)
     n = int(request.args.get("n", 16))
-    q = get_quantum_challenge(n)
-    return jsonify({"ok": True, "quantum_hex": q})
+    return jsonify({"ok": True, "quantum_hex": get_quantum_challenge(n)})
 
 @app.route("/api/latest", methods=["GET"])
 def api_latest():
     if request.args.get("auth") != ESP_AUTH_TOKEN:
         abort(401)
-
     try:
         data = fetch_thingspeak_latest_cached()
     except Exception as e:
@@ -253,43 +225,57 @@ def api_latest():
     }
 
     out = {}
-    for fkey, label in fields_map.items():
-        raw = latest.get(fkey)
+    debug_info = {} if DEBUG else None
+
+    for fk, label in fields_map.items():
+        raw = latest.get(fk)
         if not raw:
             out[label] = None
+            if DEBUG:
+                debug_info[label] = {"error": "no_field"}
             continue
-
-        parsed = decrypt_field_robust(raw, SERVER_AES_KEY_HEX, label)
-        if not parsed["ok"]:
+        parsed = decrypt_thingspeak_field(raw, SERVER_AES_KEY_HEX, label)
+        if not parsed.get("ok"):
             out[label] = None
+            if DEBUG:
+                debug_info[label] = {"error": parsed.get("error")}
             continue
 
-        val = parsed["value"]
-        q = parsed["quantum"]
+        val = parsed.get("value")
+        raw_text = parsed.get("raw")
 
-        # If this is the Quantum Key field, prefer the extracted quantum hex
-        if label.lower() == "quantum key":
-            out[label] = q or val
-            continue
-
-        # Post-process types
+        # Post-process to structured values
         if label in ("Temperature", "Humidity"):
-            out[label] = parse_numeric(val)
+            try:
+                out[label] = float(val) if val is not None else None
+            except Exception:
+                out[label] = None
         elif label == "IR Sensor":
-            # normalize to 0/1
             if val is None:
                 out[label] = None
             else:
-                out[label] = 1 if re.search(r"1", str(val)) else 0
+                out[label] = 1 if str(val).strip() == "1" else 0
         elif label == "MAX30100":
-            parsed_max = parse_bpm_spo2(val)
-            out[label] = parsed_max
-        else:
+            if isinstance(val, str) and "/" in val:
+                try:
+                    bpm_s, spo2_s = val.split("/", 1)
+                    out[label] = {"BPM": int(float(bpm_s)), "SpO2": float(spo2_s)}
+                except Exception:
+                    out[label] = None
+            else:
+                out[label] = None
+        else:  # Quantum Key or fallback
             out[label] = val
 
-    return jsonify({"ok": True, "decrypted": out, "timestamp": latest.get("created_at")})
+        if DEBUG:
+            debug_info[label] = {"raw_text": raw_text, "extracted": val}
 
-# Serve frontend static files
+    resp = {"ok": True, "decrypted": out, "timestamp": latest.get("created_at")}
+    if DEBUG:
+        resp["debug"] = debug_info
+    return jsonify(resp)
+
+# serve frontend
 @app.route("/", defaults={"path": "index.html"})
 @app.route("/<path:path>")
 def serve_frontend(path):
@@ -298,8 +284,10 @@ def serve_frontend(path):
         path = "index.html"
     return send_from_directory(FRONTEND_FOLDER, path)
 
-# ---------- Run server ----------
+# --- run ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"Q-SENSE server starting on 0.0.0.0:{port} (frontend: {FRONTEND_FOLDER})")
-    app.run(host="0.0.0.0", port=port, debug=False)
+    if DEBUG:
+        print("DEBUG mode ON")
+    print(f"Q-SENSE starting on 0.0.0.0:{port} (frontend: {FRONTEND_FOLDER})")
+    app.run(host="0.0.0.0", port=port, debug=DEBUG)
