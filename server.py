@@ -1,6 +1,6 @@
 # server.py
 from flask import Flask, jsonify, send_from_directory, request, abort
-import requests, os, re
+import requests, os
 from binascii import unhexlify
 from Crypto.Cipher import AES
 from config import *
@@ -16,9 +16,6 @@ app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
 # ---------- AESLib-Compatible Decryption ----------
 def aeslib_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
-    """
-    Replicates AESLib's CBC logic (Arduino) for AES-128-CBC using AES ECB base.
-    """
     key = unhexlify(key_hex)
     iv = unhexlify(iv_hex)
     ct = unhexlify(ct_hex)
@@ -34,7 +31,7 @@ def aeslib_decrypt(iv_hex: str, ct_hex: str, key_hex: str) -> bytes:
         dec_block = ecb.decrypt(block)
         plain_block = bytes(a ^ b for a, b in zip(dec_block, prev))
         out += plain_block
-        prev = block  # CBC chain
+        prev = block
 
     # Remove PKCS#7 padding
     pad_len = out[-1]
@@ -63,7 +60,7 @@ def aes_decrypt_and_clean(cipher_hex: str, key_hex: str, label: str):
         elif len(parts) == 1:
             value = parts[0].strip()
 
-        # Keep only printable characters (don't strip colon or slash)
+        # Keep printable characters only (preserves dots, colons, slash, numbers)
         value = "".join(c for c in value if c.isprintable())
 
         # Quantum Key field uses the quantum hex
@@ -74,7 +71,7 @@ def aes_decrypt_and_clean(cipher_hex: str, key_hex: str, label: str):
         out["value"] = value
         out["quantum"] = quantum
 
-        # Debugging output (optional)
+        # Optional debug
         print(f"DEBUG {label}: raw_text='{raw_text}', value='{value}', quantum='{quantum}'")
 
         return out
