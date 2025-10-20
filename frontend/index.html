@@ -1,40 +1,49 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Q-SENSE Dashboard</title>
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Q-SENSE Dashboard</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <header>
-        <h1>Q-SENSE Sensor Dashboard</h1>
-    </header>
+  <header>
+    <h1>Q-SENSE Sensor Dashboard</h1>
+  </header>
 
-    <main>
-        <div id="status">Connecting to backend...</div>
-        <table id="sensorTable">
-            <thead>
-                <tr>
-                    <th>Sensor</th>
-                    <th>Decrypted Value</th>
-                </tr>
-            </thead>
-            <tbody>
-                <tr><td>Quantum Key</td><td id="field1">--</td></tr>
-                <tr><td>Temperature</td><td id="field2">--</td></tr>
-                <tr><td>Humidity</td><td id="field3">--</td></tr>
-                <tr><td>IR Sensor</td><td id="field4">--</td></tr>
-                <tr><td>MAX30100</td><td id="field5">--</td></tr>
-            </tbody>
-        </table>
-        <div id="timestamp"></div>
-    </main>
+  <main>
+    <div id="status" class="status connecting">Connecting to backend...</div>
 
-    <footer>
-        <p>Powered by Q-SENSE</p>
-    </footer>
+    <div class="card-container">
+      <div class="sensor-card" id="card1">
+        <h2>Quantum Key</h2>
+        <p id="field1">--</p>
+      </div>
+      <div class="sensor-card" id="card2">
+        <h2>Temperature</h2>
+        <p id="field2">--</p>
+      </div>
+      <div class="sensor-card" id="card3">
+        <h2>Humidity</h2>
+        <p id="field3">--</p>
+      </div>
+      <div class="sensor-card" id="card4">
+        <h2>IR Sensor</h2>
+        <p id="field4">--</p>
+      </div>
+      <div class="sensor-card" id="card5">
+        <h2>MAX30100</h2>
+        <p id="field5">--</p>
+      </div>
+    </div>
 
-    <script src="script.js"></script>
+    <div id="timestamp" class="timestamp">Last updated: --</div>
+  </main>
+
+  <footer>
+    <p>Powered by Q-SENSE &copy; 2025</p>
+  </footer>
+
+  <script src="script.js"></script>
 </body>
 </html>
