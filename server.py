@@ -2,19 +2,18 @@
 import os
 import re
 import logging
-from binascii import unhexlify
+from binascii import unhexlify, hexlify
 from flask import Flask, jsonify, send_from_directory, request, abort
 import requests
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-
-from config import *          # expects SERVER_AES_KEY_HEX, ESP_AUTH_TOKEN, THINGSPEAK_CHANNEL_ID, THINGSPEAK_READ_KEY
+from config import *               # must provide SERVER_AES_KEY_HEX, ESP_AUTH_TOKEN, THINGSPEAK_CHANNEL_ID, THINGSPEAK_READ_KEY
 from quantum_key import get_quantum_challenge
 
 logging.basicConfig(level=logging.INFO)
-DEBUG = False   # set True to see decrypted raw plaintexts in logs
+DEBUG = False  # set True to log decrypted plaintext bytes for troubleshooting
 
-# locate frontend folder
+# locate frontend
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 FRONTEND_FOLDER = os.path.join(BASE_DIR, "frontend")
 if not os.path.exists(FRONTEND_FOLDER):
@@ -23,113 +22,114 @@ if not os.path.exists(FRONTEND_FOLDER):
 app = Flask(__name__, static_folder=FRONTEND_FOLDER, static_url_path="")
 
 HEX_CHARS = set("0123456789abcdefABCDEF")
+NUM_PATTERN = re.compile(r'[-+]?\d{1,4}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?')
 
 def only_hex(s: str) -> str:
     return ''.join(ch for ch in (s or "") if ch in HEX_CHARS)
 
 def find_iv_and_cipher(field: str):
     """
-    Robustly find IV (32 hex chars) and ciphertext hex in a field string.
+    Robustly find IV (32 hex chars) and ciphertext hex in the field string.
+    - Handles 'iv:cipher' clean case.
+    - Handles 'iv:cipher...iv' repeated IV at end.
+    - Falls back to extracting all hex, splitting first 32 chars as IV.
     Returns (iv_hex, cipher_hex) or (None, None).
     """
     if not field or not isinstance(field, str):
         return None, None
 
-    # normalize common URL-encoded colon
     s = field.replace('%3A', ':').replace('%3a', ':').strip()
 
-    # try pattern '32hex : >=32hex' possibly with noise around
-    for m in re.finditer(r'([0-9A-Fa-f]{32})[:%3A]*([0-9A-Fa-f]{32,})', s):
-        iv_hex = m.group(1)
-        cipher_hex = m.group(2)
-        # prefer the longest contiguous hex after iv in the original substring (we already have it)
-        # remove accidental repeated iv prefix in cipher (seen in feeds)
-        while cipher_hex.startswith(iv_hex):
-            cipher_hex = cipher_hex[len(iv_hex):]
-        # choose longest prefix of cipher_hex whose length is multiple of 32 (AES blocks in hex)
-        if len(cipher_hex) < 32:
-            continue
-        # find longest prefix length >=32 that's divisible by 32
-        for L in range(len(cipher_hex), 31, -1):
-            if L % 32 == 0:
-                candidate = cipher_hex[:L]
-                # sanity: candidate length at least 32
-                if len(candidate) >= 32:
-                    return iv_hex[:32], candidate
-    # fallback: take all hex from string and split 32/remaining
+    # Clean-case: first colon separates iv and cipher
+    if ':' in s:
+        left, right = s.split(':', 1)
+        left_h = only_hex(left)
+        right_h = only_hex(right)
+        if len(left_h) >= 32 and len(right_h) >= 32:
+            iv = left_h[:32]
+            cipher = right_h
+            # Remove trailing repeated iv occurrences
+            while cipher.endswith(iv):
+                cipher = cipher[:-len(iv)]
+            # Truncate cipher to a multiple of 32 hex chars (16-byte blocks)
+            if len(cipher) >= 32 and len(cipher) % 32 != 0:
+                L = (len(cipher) // 32) * 32
+                cipher = cipher[:L]
+            if len(cipher) >= 32:
+                return iv, cipher
+
+    # Fallback: take all hex characters and split first 32 as IV
     allh = only_hex(s)
     if len(allh) >= 64:
-        iv_hex = allh[:32]
-        cipher_hex = allh[32:]
-        # strip repeated iv prefix in cipher
-        while cipher_hex.startswith(iv_hex):
-            cipher_hex = cipher_hex[len(iv_hex):]
-        # truncate to multiple of 32 if necessary (take longest prefix)
-        if len(cipher_hex) >= 32:
-            L = (len(cipher_hex) // 32) * 32
-            cipher_hex = cipher_hex[:L]
-            return iv_hex[:32], cipher_hex
+        iv = allh[:32]
+        cipher = allh[32:]
+        while cipher.endswith(iv):
+            cipher = cipher[:-len(iv)]
+        if len(cipher) >= 32 and len(cipher) % 32 != 0:
+            L = (len(cipher) // 32) * 32
+            cipher = cipher[:L]
+        if len(cipher) >= 32:
+            return iv, cipher
+
     return None, None
 
 def safe_unpad(pt: bytes) -> bytes:
-    """
-    Try Crypto.Util.Padding.unpad; if fails, do a manual best-effort PKCS7 unpad.
-    """
+    """Try Crypto unpad first; fallback to manual check; otherwise return original bytes."""
     try:
         return unpad(pt, AES.block_size)
     except Exception:
-        # manual check
         if not pt:
             return pt
         pad_len = pt[-1]
         if 1 <= pad_len <= AES.block_size and pt[-pad_len:] == bytes([pad_len]) * pad_len:
             return pt[:-pad_len]
-        # if padding invalid, return pt as-is (we'll still try to parse printable content)
         return pt
 
-def bytes_to_printable_ascii(b: bytes) -> str:
+def bytes_to_printable(b: bytes) -> str:
     return ''.join(chr(x) for x in b if 32 <= x <= 126)
 
-NUM_PATTERN = re.compile(r'[-+]?\d{1,4}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?')
-
-def pick_best_value_from_plaintext(pt_bytes: bytes, label: str):
+def parse_plaintext_bytes(pt_bytes: bytes, label: str):
     """
-    Return (value_str, quantum_hex_or_None).
-    Steps:
-     - look for b'::' delimiter bytes and take first token if printable
-     - else search for a 32-hex quantum and numeric before it
-     - else search numeric pattern anywhere
-     - else return printable ascii segment
+    Parse the plaintext bytes into (value, quantum).
+    Expected plaintext: "<value>::<challenge_id>::<quantum_hex>"
+    Strategy:
+      - prefer splitting on b'::' (bytes)
+      - if not found, find 32-hex quantum and numeric before it
+      - else search numeric anywhere
+      - fallback to printable ascii substring
     """
-    # find 32-hex quantum anywhere
+    quantum = None
     m_q = re.search(rb'([0-9a-fA-F]{32})', pt_bytes)
-    quantum = m_q.group(1).decode('ascii') if m_q else None
+    if m_q:
+        quantum = m_q.group(1).decode('ascii')
 
-    # if b'::' present, split at first occurrence and take bytes before it
+    # Split by bytes-level :: if present
     if b"::" in pt_bytes:
-        first = pt_bytes.split(b"::", 1)[0].strip()
-        # decode first token using utf-8, fallback latin-1
+        parts = pt_bytes.split(b"::")
+        # first token is value
+        raw_val = parts[0].strip()
+        # decode safely
         try:
-            s = first.decode('utf-8').strip()
+            s = raw_val.decode('utf-8').strip()
         except Exception:
-            s = first.decode('latin-1', errors='ignore').strip()
-        # if looks numeric-like, return numeric token
+            s = raw_val.decode('latin-1', errors='ignore').strip()
+        # extract numeric or formatted value
         mnum = NUM_PATTERN.search(s)
         if mnum:
-            return mnum.group(0), quantum
-        # else if it's readable alpha-numeric return cleaned
+            value = mnum.group(0)
+            return value, quantum
+        # fallback cleaned alnum
         cleaned = re.sub(r'[^0-9A-Za-z./\-+]', '', s)
         if cleaned:
             return cleaned, quantum
+        # if nothing, continue to other heuristics
 
-    # try numeric directly before quantum in bytes
+    # If quantum present, try numeric before quantum
     if m_q:
         qstart = m_q.start()
         before = pt_bytes[:qstart]
-        # search backwards for numeric pattern
-        # reverse bytes to search conveniently for last numeric group
-        rev = before[::-1]
-        m_rev = re.search(rb'(\d{1,3}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?)', rev)
+        # search numeric from end
+        m_rev = re.search(rb'(\d{1,3}(?:\.\d+)?(?:/\d{1,3}(?:\.\d+)?)?)', before[::-1])
         if m_rev:
             cand = m_rev.group(0)[::-1]
             try:
@@ -137,15 +137,18 @@ def pick_best_value_from_plaintext(pt_bytes: bytes, label: str):
             except Exception:
                 return cand.decode('latin-1', errors='ignore'), quantum
 
-    # search for numeric anywhere
-    m_any = NUM_PATTERN.search(pt_bytes.decode('latin-1', errors='ignore'))
+    # search numeric anywhere
+    try:
+        candidate_text = pt_bytes.decode('latin-1', errors='ignore')
+    except Exception:
+        candidate_text = bytes_to_printable(pt_bytes)
+    m_any = NUM_PATTERN.search(candidate_text)
     if m_any:
         return m_any.group(0), quantum
 
-    # fallback: printable ascii substring (trim)
-    printable = bytes_to_printable_ascii(pt_bytes).strip()
+    # final printable fallback
+    printable = bytes_to_printable(pt_bytes).strip()
     if printable:
-        # try last token in printable
         toks = re.findall(r'[0-9A-Za-z./\-+]{1,64}', printable)
         if toks:
             return toks[-1], quantum
@@ -153,39 +156,44 @@ def pick_best_value_from_plaintext(pt_bytes: bytes, label: str):
 
     return "N/A", quantum
 
-def decrypt_field(raw_field: str):
+def decrypt_field(field_value: str, key_hex: str, label: str):
     """
-    Returns (value_str, quantum_hex_or_None, error_or_None)
+    Returns (value_str, quantum_or_None, error_or_None)
     """
     try:
-        iv_hex, cipher_hex = find_iv_and_cipher(raw_field)
+        iv_hex, cipher_hex = find_iv_and_cipher(field_value)
         if not iv_hex or not cipher_hex:
             return None, None, "iv_or_cipher_not_found"
 
-        # decode hex
         try:
             iv = unhexlify(iv_hex)
             ct = unhexlify(cipher_hex)
         except Exception as e:
             return None, None, f"hex_decode_error:{e}"
 
-        key = unhexlify(SERVER_AES_KEY_HEX)
+        key = unhexlify(key_hex)
+
+        if len(ct) == 0:
+            return None, None, "cipher_empty"
 
         cipher = AES.new(key, AES.MODE_CBC, iv)
         pt = cipher.decrypt(ct)
         pt_unp = safe_unpad(pt)
 
         if DEBUG:
-            logging.info("raw_field (trimmed): %s", (raw_field[:200] + '...') if len(raw_field) > 200 else raw_field)
-            logging.info("plaintext (bytes): %s", pt_unp[:200])
+            logging.info("FIELD (%s) decrypted raw bytes: %s", label, hexlify(pt_unp)[:200])
 
-        # choose best value
-        value, quantum = pick_best_value_from_plaintext(pt_unp, label="")
-        return value, quantum, None
+        value, quantum = parse_plaintext_bytes(pt_unp, label)
+
+        # Special-case quantum field: prefer quantum hex
+        if label.lower() == "quantum key":
+            return (quantum or value or "N/A"), quantum, None
+
+        return value or "N/A", quantum, None
+
     except Exception as e:
         return None, None, str(e)
 
-# --- ThingSpeak fetch ---
 def fetch_thingspeak_latest():
     url = f"https://api.thingspeak.com/channels/{THINGSPEAK_CHANNEL_ID}/feeds.json"
     params = {"api_key": THINGSPEAK_READ_KEY, "results": 1}
@@ -193,7 +201,6 @@ def fetch_thingspeak_latest():
     r.raise_for_status()
     return r.json()
 
-# --- Routes ---
 @app.route("/quantum", methods=["GET"])
 def api_quantum():
     token = request.args.get("token")
@@ -233,17 +240,17 @@ def api_latest():
             decrypted[label] = "N/A"
             continue
 
-        value, quantum, error = decrypt_field(raw)
+        value, quantum, error = decrypt_field(raw, SERVER_AES_KEY_HEX, label)
         if error:
-            logging.info(f"Decrypt error for {fkey}/{label}: {error}")
+            logging.info("Decrypt error for %s (%s): %s", fkey, label, error)
             decrypted[label] = "N/A"
             continue
 
-        # if Quantum Key field, prefer the found quantum hex
+        # For quantum field prefer the hex
         if label == "Quantum Key":
             decrypted[label] = quantum or value or "N/A"
         else:
-            decrypted[label] = value or "N/A"
+            decrypted[label] = value
 
     return jsonify({
         "ok": True,
@@ -251,7 +258,6 @@ def api_latest():
         "timestamp": latest.get("created_at")
     })
 
-# serve frontend static files
 @app.route("/", defaults={"path": "index.html"})
 @app.route("/<path:path>")
 def serve_frontend(path):
