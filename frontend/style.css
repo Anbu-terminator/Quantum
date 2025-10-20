@@ -1,29 +1,22 @@
-/* Reset & base */
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-
 body {
-  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-  background: linear-gradient(to bottom right, #e0f7fa, #ffffff);
-  color: #333;
+  font-family: 'Arial', sans-serif;
+  background: linear-gradient(to bottom, #e0f7fa, #ffffff);
+  margin: 0;
   display: flex;
   flex-direction: column;
   min-height: 100vh;
+  color: #333;
 }
 
-/* Header */
 header {
-  background: #0077cc;
+  background-color: #0077cc;
   color: #fff;
-  padding: 1.2rem;
+  padding: 1rem;
   text-align: center;
-  box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+  animation: fadeInDown 1s ease;
 }
 
-/* Main content */
 main {
   flex: 1;
   padding: 2rem;
@@ -32,98 +25,80 @@ main {
   align-items: center;
 }
 
-/* Status */
-.status {
+#status {
+  margin-bottom: 1rem;
   font-weight: bold;
-  margin-bottom: 1.5rem;
-  padding: 0.5rem 1rem;
-  border-radius: 8px;
-  transition: all 0.3s ease;
+  font-size: 1.1rem;
+  animation: fadeIn 1s ease;
 }
 
-.status.connecting {
-  background: #fff3cd;
-  color: #856404;
+.cards {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1rem;
+  margin-bottom: 2rem;
 }
 
-.status.connected {
-  background: #d4edda;
-  color: #155724;
+.card {
+  background-color: #fff;
+  border-radius: 12px;
+  padding: 1rem 1.5rem;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  text-align: center;
+  flex: 1 1 150px;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
 }
 
-.status.error {
-  background: #f8d7da;
-  color: #721c24;
+.card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 6px 18px rgba(0,0,0,0.2);
 }
 
-/* Sensor cards container */
-.card-container {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 1.2rem;
-  width: 100%;
+.card h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+  color: #0077cc;
+}
+
+.card p {
+  font-size: 1.3rem;
+  font-weight: bold;
+  margin: 0;
+}
+
+.charts {
+  width: 90%;
   max-width: 900px;
   margin-bottom: 2rem;
 }
 
-/* Individual sensor cards */
-.sensor-card {
-  background: #ffffffcc;
-  backdrop-filter: blur(5px);
+canvas {
+  background-color: #fff;
   border-radius: 12px;
   padding: 1rem;
-  text-align: center;
-  box-shadow: 0 6px 15px rgba(0,0,0,0.1);
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  margin-bottom: 2rem;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
 }
 
-.sensor-card:hover {
-  transform: translateY(-5px);
-  box-shadow: 0 12px 20px rgba(0,0,0,0.2);
-}
-
-.sensor-card h2 {
-  font-size: 1.1rem;
-  margin-bottom: 0.5rem;
-  color: #0077cc;
-}
-
-.sensor-card p {
-  font-size: 1.3rem;
-  font-weight: bold;
-  color: #333;
-  transition: color 0.3s ease;
-}
-
-/* Color cues for special sensors */
-#card4 p { /* IR Sensor */
-  color: gray;
-}
-
-#card4 p.active {
-  color: red;
-  font-weight: bold;
-}
-
-/* Timestamp */
-.timestamp {
+#timestamp {
   font-size: 0.9rem;
   color: #555;
   margin-top: 1rem;
 }
 
-/* Footer */
 footer {
   background-color: #eee;
   text-align: center;
-  padding: 0.7rem;
-  font-size: 0.9rem;
-  color: #333;
+  padding: 0.5rem;
 }
 
-/* Responsive tweaks */
-@media (max-width: 600px) {
-  main {
-    padding: 1rem;
-  }
+@keyframes fadeIn {
+  0% {opacity:0;}
+  100% {opacity:1;}
+}
+
+@keyframes fadeInDown {
+  0% {opacity:0; transform: translateY(-20px);}
+  100% {opacity:1; transform: translateY(0);}
 }
