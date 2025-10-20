@@ -1,110 +1,91 @@
-const AUTH_TOKEN = "6772698c38270a210fabf1133fc6ad00";
-const API_URL = "/api/latest?auth=" + AUTH_TOKEN;
+const AUTH_TOKEN = "YOUR_ESP_AUTH_TOKEN"; // same as server.py
 
-let tempChart, humidityChart, maxChart;
-const tempData = [], humidityData = [], bpmData = [], spo2Data = [], labels = [];
+const fieldElements = {
+  field1: document.getElementById("field1"),
+  field2: document.getElementById("field2"),
+  field3: document.getElementById("field3"),
+  field4: document.getElementById("field4"),
+  field5: document.getElementById("field5"),
+};
 
-function formatValue(label, v) {
-  if (v === null || v === undefined || v === "--") return "--";
-  switch (label) {
-    case "Temperature": return `${parseFloat(v).toFixed(2)} °C`;
-    case "Humidity": return `${parseFloat(v).toFixed(2)} %`;
-    case "IR Sensor": return v === 1 ? "ACTIVE 🔴" : "OFF ⚫";
-    case "MAX30100":
-      return v.BPM && v.SpO2 ? `${v.BPM} BPM / ${v.SpO2} %SpO₂` : "--";
-    case "Quantum Key":
-      return v.toString().slice(-32);
-    default: return v;
-  }
-}
+const irIndicator = document.getElementById("field4");
+const timestampEl = document.getElementById("timestamp");
 
-function formatTime(ts) {
-  if (!ts) return "--";
-  return new Date(ts).toLocaleString();
-}
-
-function updateUI(data, timestamp) {
-  document.getElementById("field1").textContent = formatValue("Quantum Key", data["Quantum Key"]);
-  document.getElementById("field2").textContent = formatValue("Temperature", data["Temperature"]);
-  document.getElementById("field3").textContent = formatValue("Humidity", data["Humidity"]);
-  document.getElementById("field4").textContent = formatValue("IR Sensor", data["IR Sensor"]);
-  document.getElementById("field5").textContent = formatValue("MAX30100", data["MAX30100"]);
-  document.getElementById("timestamp").textContent = "Last updated: " + formatTime(timestamp);
-
-  // update charts
-  const now = new Date().toLocaleTimeString();
-  labels.push(now);
-  tempData.push(data["Temperature"] || null);
-  humidityData.push(data["Humidity"] || null);
-  bpmData.push(data["MAX30100"] ? data["MAX30100"].BPM : null);
-  spo2Data.push(data["MAX30100"] ? data["MAX30100"].SpO2 : null);
-
-  if (labels.length > 20) {
-    labels.shift();
-    tempData.shift();
-    humidityData.shift();
-    bpmData.shift();
-    spo2Data.shift();
-  }
-
-  if (tempChart) tempChart.update();
-  if (humidityChart) humidityChart.update();
-  if (maxChart) maxChart.update();
-
-  const statusEl = document.getElementById("status");
-  statusEl.textContent = "Connected ✔";
-  statusEl.style.color = "limegreen";
-}
-
-function showError(errMsg) {
-  const statusEl = document.getElementById("status");
-  statusEl.textContent = "Error ❌ " + (errMsg || "");
-  statusEl.style.color = "red";
-}
-
-async function fetchData() {
-  try {
-    const resp = await fetch(API_URL);
-    if (!resp.ok) throw new Error("Network error: " + resp.status);
-    const data = await resp.json();
-    if (!data.ok) throw new Error("Backend error");
-    updateUI(data.decrypted, data.timestamp);
-  } catch (err) {
-    console.error(err);
-    showError(err.message);
-  }
-}
+let tempChart, humChart, bpmChart;
+let tempData = [], humData = [], bpmData = [], spo2Data = [], labels = [];
 
 function initCharts() {
   const ctxTemp = document.getElementById("tempChart").getContext("2d");
   tempChart = new Chart(ctxTemp, {
     type: "line",
-    data: { labels, datasets: [{ label: "Temperature (°C)", data: tempData, borderColor: "#ff5733", backgroundColor: "#ffcccb55", tension: 0.4 }] },
-    options: { responsive:true, plugins:{legend:{display:true}} }
+    data: { labels, datasets: [{ label: "Temperature (°C)", data: tempData, borderColor: "#FF5722", backgroundColor: "rgba(255,87,34,0.2)" }] },
+    options: { responsive: true, animation: { duration: 800 } },
   });
 
-  const ctxHumidity = document.getElementById("humidityChart").getContext("2d");
-  humidityChart = new Chart(ctxHumidity, {
+  const ctxHum = document.getElementById("humChart").getContext("2d");
+  humChart = new Chart(ctxHum, {
     type: "line",
-    data: { labels, datasets: [{ label: "Humidity (%)", data: humidityData, borderColor: "#33c1ff", backgroundColor: "#33ccff33", tension:0.4 }] },
-    options: { responsive:true, plugins:{legend:{display:true}} }
+    data: { labels, datasets: [{ label: "Humidity (%)", data: humData, borderColor: "#03A9F4", backgroundColor: "rgba(3,169,244,0.2)" }] },
+    options: { responsive: true, animation: { duration: 800 } },
   });
 
-  const ctxMax = document.getElementById("maxChart").getContext("2d");
-  maxChart = new Chart(ctxMax, {
+  const ctxBPM = document.getElementById("bpmChart").getContext("2d");
+  bpmChart = new Chart(ctxBPM, {
     type: "line",
     data: {
       labels,
       datasets: [
-        { label: "BPM", data: bpmData, borderColor: "#33ff57", backgroundColor: "#33ff5733", tension:0.4 },
-        { label: "SpO2", data: spo2Data, borderColor: "#ff33a6", backgroundColor: "#ff33a633", tension:0.4 }
+        { label: "BPM", data: bpmData, borderColor: "#4CAF50", backgroundColor: "rgba(76,175,80,0.2)" },
+        { label: "SpO2", data: spo2Data, borderColor: "#FF9800", backgroundColor: "rgba(255,152,0,0.2)" }
       ]
     },
-    options: { responsive:true, plugins:{legend:{display:true}} }
+    options: { responsive: true, animation: { duration: 800 } },
   });
 }
 
-// initial load
+async function fetchData() {
+  try {
+    const res = await fetch(`/api/latest?auth=${AUTH_TOKEN}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error("Fetch failed");
+
+    const sensors = data.decrypted;
+    timestampEl.textContent = `Last update: ${new Date(data.timestamp).toLocaleString()}`;
+
+    fieldElements.field1.textContent = sensors["Quantum Key"];
+    fieldElements.field2.textContent = sensors["Temperature"];
+    fieldElements.field3.textContent = sensors["Humidity"];
+    fieldElements.field5.textContent = typeof sensors["MAX30100"] === "object" ? `BPM: ${sensors["MAX30100"].BPM}, SpO2: ${sensors["MAX30100"].SpO2}` : sensors["MAX30100"];
+
+    // IR indicator
+    if (sensors["IR Sensor"] === 1) {
+      irIndicator.style.backgroundColor = "#4CAF50";
+    } else if (sensors["IR Sensor"] === 0) {
+      irIndicator.style.backgroundColor = "#F44336";
+    } else {
+      irIndicator.style.backgroundColor = "gray";
+    }
+
+    // Update charts
+    const label = new Date(data.timestamp).toLocaleTimeString();
+    labels.push(label);
+    tempData.push(Number(sensors["Temperature"]) || 0);
+    humData.push(Number(sensors["Humidity"]) || 0);
+    bpmData.push(sensors["MAX30100"]?.BPM || 0);
+    spo2Data.push(sensors["MAX30100"]?.SpO2 || 0);
+
+    if (labels.length > 20) { labels.shift(); tempData.shift(); humData.shift(); bpmData.shift(); spo2Data.shift(); }
+
+    tempChart.update();
+    humChart.update();
+    bpmChart.update();
+
+  } catch (err) {
+    console.error(err);
+    document.getElementById("status").textContent = "Error connecting to backend";
+  }
+}
+
 initCharts();
 fetchData();
-setInterval(fetchData, 20000); // every 20 seconds
+setInterval(fetchData, 5000);
