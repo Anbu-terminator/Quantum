@@ -1,12 +1,12 @@
-// script.js
-const AUTH_TOKEN = "6772698c38270a210fabf1133fc6ad00"; // <- set to same token as server
+// script.js — paste into frontend/script.js
+const AUTH_TOKEN = "6772698c38270a210fabf1133fc6ad00"; // must match config.ESP_AUTH_TOKEN
 const API_URL = `/api/latest?auth=${AUTH_TOKEN}`;
 
+// DOM
 const el = id => document.getElementById(id);
 const statusEl = el("status");
 const tsEl = el("timestamp");
-
-const fieldMap = {
+const fields = {
   "Quantum Key": el("field1"),
   "Temperature": el("field2"),
   "Humidity": el("field3"),
@@ -14,140 +14,129 @@ const fieldMap = {
   "MAX30100": el("field5"),
 };
 
-// Chart datasets
-let labels = [];
-let tempSeries = [], humSeries = [], bpmSeries = [], spo2Series = [];
-let chartTemp, chartHum, chartMax;
+// Charts (Chart.js must be loaded from CDN in index.html)
+let labels = [], tempSeries = [], humSeries = [], bpmSeries = [], spo2Series = [];
+let chartT, chartH, chartM;
 
-function fmtNumber(n, decimals=2){
-  if (n === null || n === undefined) return "--";
-  if (typeof n === "number") return n.toFixed(decimals);
-  const v = Number(n);
-  return isNaN(v) ? "--" : v.toFixed(decimals);
-}
+function safeStr(v) { return v === null || v === undefined ? "--" : String(v); }
 
-function displayValue(label, value){
-  const node = fieldMap[label];
+function displayValue(label, v) {
+  const node = fields[label];
   if (!node) return;
-  if (value === null || value === undefined) {
+  if (v == null) {
     node.textContent = "--";
+    if (label === "IR Sensor") { node.style.background = '#cbd5e1'; node.style.color = '#000'; }
     return;
   }
-
   if (label === "Quantum Key") {
-    // show last 32 hex chars if looks hex
-    const s = String(value);
-    const hx = s.match(/[0-9a-fA-F]{16,64}/);
-    node.textContent = hx ? hx[0].slice(-32) : s;
+    const s = String(v);
+    const m = s.match(/[0-9a-fA-F]{16,64}/);
+    node.textContent = m ? m[0].slice(-32) : s;
     return;
   }
   if (label === "Temperature") {
-    node.textContent = (typeof value === "number") ? `${fmtNumber(value)} °C` : value;
+    node.textContent = (typeof v === "number") ? `${v.toFixed(2)} °C` : safeStr(v);
     return;
   }
   if (label === "Humidity") {
-    node.textContent = (typeof value === "number") ? `${fmtNumber(value)} %` : value;
+    node.textContent = (typeof v === "number") ? `${v.toFixed(2)} %` : safeStr(v);
     return;
   }
   if (label === "IR Sensor") {
-    if (value === 1 || value === "1") {
+    if (v === 1 || v === "1") {
       node.textContent = "ACTIVE";
-      node.style.backgroundColor = "#10B981"; // green
+      node.style.background = "#10B981";
       node.style.color = "#fff";
       node.style.transform = "scale(1.05)";
-    } else if (value === 0 || value === "0") {
+    } else if (v === 0 || v === "0") {
       node.textContent = "OFF";
-      node.style.backgroundColor = "#EF4444"; // red
+      node.style.background = "#EF4444";
       node.style.color = "#fff";
       node.style.transform = "scale(1)";
     } else {
-      node.textContent = "--";
-      node.style.backgroundColor = "#cbd5e1";
+      node.textContent = safeStr(v);
+      node.style.background = "#cbd5e1";
       node.style.color = "#000";
       node.style.transform = "scale(1)";
     }
     return;
   }
   if (label === "MAX30100") {
-    if (value && typeof value === "object" && "BPM" in value && "SpO2" in value) {
-      node.textContent = `${value.BPM} BPM / ${value.SpO2} %SpO₂`;
-    } else {
-      node.textContent = String(value);
-    }
+    if (v && typeof v === "object" && "BPM" in v && "SpO2" in v) {
+      node.textContent = `${v.BPM} BPM / ${v.SpO2} %SpO₂`;
+    } else node.textContent = safeStr(v);
     return;
   }
-  node.textContent = String(value);
+  node.textContent = safeStr(v);
 }
 
-function initCharts(){
-  const ctxT = document.getElementById("chartTemp").getContext("2d");
-  chartTemp = new Chart(ctxT, {
+// Initialize charts
+function initCharts() {
+  const tctx = document.getElementById("chartTemp").getContext("2d");
+  chartT = new Chart(tctx, {
     type: "line",
-    data: { labels, datasets: [{ label: "Temperature (°C)", data: tempSeries, borderColor: "#FF7043", backgroundColor: "rgba(255,112,67,0.12)", tension:0.35 }]},
-    options: { responsive:true, plugins:{legend:{display:true}} }
+    data: { labels, datasets: [{ label: "Temperature (°C)", data: tempSeries, borderColor: "#FF7043", backgroundColor: "rgba(255,112,67,0.12)", tension:0.3 }]},
+    options: { responsive:true }
   });
 
-  const ctxH = document.getElementById("chartHum").getContext("2d");
-  chartHum = new Chart(ctxH, {
+  const hctx = document.getElementById("chartHum").getContext("2d");
+  chartH = new Chart(hctx, {
     type: "line",
-    data: { labels, datasets: [{ label: "Humidity (%)", data: humSeries, borderColor: "#42A5F5", backgroundColor: "rgba(66,165,245,0.12)", tension:0.35 }]},
-    options: { responsive:true, plugins:{legend:{display:true}} }
+    data: { labels, datasets: [{ label: "Humidity (%)", data: humSeries, borderColor: "#42A5F5", backgroundColor: "rgba(66,165,245,0.12)", tension:0.3 }]},
+    options: { responsive:true }
   });
 
-  const ctxM = document.getElementById("chartMax").getContext("2d");
-  chartMax = new Chart(ctxM, {
+  const mctx = document.getElementById("chartMax").getContext("2d");
+  chartM = new Chart(mctx, {
     type: "line",
-    data: {
-      labels,
-      datasets: [
-        { label: "BPM", data: bpmSeries, borderColor: "#66BB6A", backgroundColor: "rgba(102,187,106,0.12)", tension:0.35 },
-        { label: "SpO2", data: spo2Series, borderColor: "#FFA726", backgroundColor: "rgba(255,167,38,0.12)", tension:0.35 }
-      ]
-    },
-    options:{ responsive:true, plugins:{legend:{display:true}} }
+    data: { labels, datasets: [
+      { label: "BPM", data: bpmSeries, borderColor: "#66BB6A", backgroundColor: "rgba(102,187,106,0.12)", tension:0.3 },
+      { label: "SpO2", data: spo2Series, borderColor: "#FFA726", backgroundColor: "rgba(255,167,38,0.12)", tension:0.3 }
+    ]},
+    options: { responsive:true }
   });
 }
 
-async function fetchAndRender(){
+async function fetchAndRender() {
   try {
     const res = await fetch(API_URL);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw new Error("Network response " + res.status);
     const payload = await res.json();
     if (!payload.ok) throw new Error(payload.error || "backend error");
 
-    const sensors = payload.decrypted || {};
+    const s = payload.decrypted || {};
     const ts = payload.timestamp || new Date().toISOString();
     tsEl.textContent = `Last update: ${new Date(ts).toLocaleString()}`;
 
-    // Display values
-    displayValue("Quantum Key", sensors["Quantum Key"]);
-    displayValue("Temperature", sensors["Temperature"]);
-    displayValue("Humidity", sensors["Humidity"]);
-    displayValue("IR Sensor", sensors["IR Sensor"]);
-    displayValue("MAX30100", sensors["MAX30100"]);
+    // Show values
+    displayValue("Quantum Key", s["Quantum Key"]);
+    displayValue("Temperature", s["Temperature"]);
+    displayValue("Humidity", s["Humidity"]);
+    displayValue("IR Sensor", s["IR Sensor"]);
+    displayValue("MAX30100", s["MAX30100"]);
 
-    // Push to charts
+    // push to charts
     const label = new Date(ts).toLocaleTimeString();
     labels.push(label);
-    tempSeries.push( (typeof sensors["Temperature"] === "number") ? sensors["Temperature"] : null );
-    humSeries.push( (typeof sensors["Humidity"] === "number") ? sensors["Humidity"] : null );
-    bpmSeries.push( sensors["MAX30100"] && sensors["MAX30100"].BPM ? sensors["MAX30100"].BPM : null );
-    spo2Series.push( sensors["MAX30100"] && sensors["MAX30100"].SpO2 ? sensors["MAX30100"].SpO2 : null );
+    tempSeries.push(typeof s["Temperature"] === "number" ? s["Temperature"] : null);
+    humSeries.push(typeof s["Humidity"] === "number" ? s["Humidity"] : null);
+    bpmSeries.push(s["MAX30100"] && s["MAX30100"].BPM ? s["MAX30100"].BPM : null);
+    spo2Series.push(s["MAX30100"] && s["MAX30100"].SpO2 ? s["MAX30100"].SpO2 : null);
 
-    if (labels.length > 24) {
-      labels.shift(); tempSeries.shift(); humSeries.shift(); bpmSeries.shift(); spo2Series.shift();
-    }
-    chartTemp.update(); chartHum.update(); chartMax.update();
+    if (labels.length > 24) { labels.shift(); tempSeries.shift(); humSeries.shift(); bpmSeries.shift(); spo2Series.shift(); }
+
+    chartT.update(); chartH.update(); chartM.update();
 
     statusEl.textContent = "Connected ✓";
     statusEl.style.background = "linear-gradient(90deg,#dcfce7,#bbf7d0)";
   } catch (err) {
-    console.error("fetch error", err);
+    console.error("Fetch error:", err);
     statusEl.textContent = "Error connecting to backend";
     statusEl.style.background = "linear-gradient(90deg,#fee2e2,#fecaca)";
   }
 }
 
+// init
 initCharts();
 fetchAndRender();
-setInterval(fetchAndRender, 10000); // update every 10s
+setInterval(fetchAndRender, 10000);
