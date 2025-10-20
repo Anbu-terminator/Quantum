@@ -1,4 +1,4 @@
-# server.py – FINAL DECRYPTION FIXED VERSION
+# server.py — Neon Dashboard Edition (MAX30100 Removed)
 import os, re, time, requests
 from binascii import unhexlify
 from flask import Flask, jsonify, request, send_from_directory, abort
@@ -84,18 +84,6 @@ def extract_value(pt, label):
         digits = re.findall(r'[01]', val)
         return int(digits[0]) if digits else None
 
-    if lbl == "max30100":
-        cleaned = re.sub(r'[^0-9./]', '', val)
-        if '/' in cleaned:
-            try:
-                bpm, spo2 = cleaned.split('/')
-                return {"BPM": int(float(bpm)), "SpO2": float(spo2)}
-            except: return None
-        nums = FLOAT_RE.findall(cleaned)
-        if len(nums) >= 2:
-            return {"BPM": int(float(nums[0])), "SpO2": float(nums[1])}
-        return None
-
     return ''.join(ch for ch in val if 32 <= ord(ch) <= 126).strip() or None
 
 # ========== Decrypt Field ==========
@@ -105,17 +93,15 @@ def decrypt_field(field, key_hex, label):
     iv, ct = keep_hex(iv), normalize_ct_hex(strip_iv_tail(ct, iv))
     if not iv or not ct: return None
 
-    best = None
     for method in ("cbc", "ecb"):
         try:
             pt = aes_cbc(iv, ct, key_hex) if method == "cbc" else aes_ecb_xor(iv, ct, key_hex)
             val = extract_value(pt, label)
             if val is not None:
-                best = val
-                break
-        except Exception as e:
+                return val
+        except Exception:
             continue
-    return best
+    return None
 
 # ========== ThingSpeak ==========
 _cache = {"ts": 0, "data": None}
@@ -140,21 +126,20 @@ def latest():
         feeds = fetch_latest().get("feeds", [])
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
-    if not feeds: return jsonify({"ok": False, "error": "No data"}), 404
+    if not feeds:
+        return jsonify({"ok": False, "error": "No data"}), 404
 
     latest = feeds[-1]
     mapping = {
         "field1": "Quantum Key",
         "field2": "Temperature",
         "field3": "Humidity",
-        "field4": "IR Sensor",
-        "field5": "MAX30100"
+        "field4": "IR Sensor"
     }
 
     out = {}
     for f, label in mapping.items():
-        val = decrypt_field(latest.get(f), SERVER_AES_KEY_HEX, label)
-        out[label] = val
+        out[label] = decrypt_field(latest.get(f), SERVER_AES_KEY_HEX, label)
 
     return jsonify({"ok": True, "decrypted": out, "timestamp": latest.get("created_at")})
 
@@ -168,5 +153,5 @@ def serve(path):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    print(f"Running on http://0.0.0.0:{port}")
+    print(f"🚀 Running on http://0.0.0.0:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)
