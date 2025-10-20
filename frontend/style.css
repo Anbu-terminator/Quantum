@@ -6,6 +6,9 @@
   --text: #e0eaff;
   --neon-pink: #ff4081;
   --neon-cyan: #00eaff;
+  --neon-green: #00ff88;
+  --neon-red: #ff0044;
+  --neon-gray: #777;
 }
 
 body {
@@ -88,6 +91,45 @@ td:hover {
   text-shadow: 0 0 10px var(--neon-pink);
 }
 
+.ir-indicator {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 15px #444;
+  vertical-align: middle;
+  transition: all 0.4s ease;
+}
+
+.ir-indicator.on {
+  background-color: var(--neon-green);
+  box-shadow: 0 0 20px var(--neon-green), 0 0 40px var(--neon-green);
+  animation: pulseGreen 1.2s infinite alternate;
+}
+
+.ir-indicator.off {
+  background-color: var(--neon-red);
+  box-shadow: 0 0 20px var(--neon-red), 0 0 40px var(--neon-red);
+  animation: pulseRed 1.2s infinite alternate;
+}
+
+.ir-indicator.neutral {
+  background-color: var(--neon-gray);
+  box-shadow: 0 0 15px var(--neon-gray);
+  animation: none;
+}
+
+@keyframes pulseGreen {
+  from { box-shadow: 0 0 15px var(--neon-green), 0 0 30px var(--neon-green); transform: scale(1); }
+  to { box-shadow: 0 0 30px var(--neon-green), 0 0 60px var(--neon-green); transform: scale(1.2); }
+}
+
+@keyframes pulseRed {
+  from { box-shadow: 0 0 15px var(--neon-red), 0 0 30px var(--neon-red); transform: scale(1); }
+  to { box-shadow: 0 0 30px var(--neon-red), 0 0 60px var(--neon-red); transform: scale(1.2); }
+}
+
 #timestamp {
   margin-top: 1rem;
   text-align: center;
@@ -117,11 +159,11 @@ footer {
   opacity: 0.8;
 }
 
-/* Animations */
 @keyframes glow-pulse {
   from { text-shadow: 0 0 15px var(--neon-cyan), 0 0 25px var(--neon-cyan); }
   to { text-shadow: 0 0 25px var(--neon-pink), 0 0 45px var(--neon-pink); }
 }
+
 .fade-in {
   animation: fadeIn 1s ease forwards;
 }
